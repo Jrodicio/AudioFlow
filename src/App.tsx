@@ -3,6 +3,7 @@ import { SystemAudio, type CaptureSnapshot } from './audio/capture';
 import { clamp } from './audio/features';
 import { readSettings, STORAGE_KEY, type Settings, type Style } from './settings';
 import { Universe, type VisualStats } from './visual/Universe';
+import { DEFAULT_THEME } from './themes';
 
 const descriptions: Record<Style, { number: string; title: string; subtitle: string; detail: string }> = {
   atmosphere: { number: '01', title: 'Atmosphere', subtitle: 'El sonido se vuelve aire.', detail: 'Nubes de tinta · corrientes suaves · profundidad' },
@@ -159,6 +160,7 @@ export function App() {
 
       {panel && <aside className="control-panel" aria-label="Ajustes del universo">
         <div className="panel-heading"><div><span className="eyebrow">TU UNIVERSO</span><h2>Ajustá la materia</h2></div><button className="icon-button" onClick={() => setPanel(false)} aria-label="Cerrar ajustes"><Icon name="close" /></button></div>
+        {visualStyle === 'atmosphere' && <p className="panel-note">Tema: {DEFAULT_THEME.name}</p>}
         <Slider label="Sensibilidad" value={settings.sensitivity} min={0.3} max={3} step={0.05} format={v => `${v.toFixed(2)}×`} onChange={v => update('sensitivity', v)} />
         <Slider label="Intensidad" value={settings.intensity} min={0} max={1.5} step={0.01} format={v => `${Math.round(v*100)}%`} onChange={v => update('intensity', v)} />
         <Slider label="Suavidad" value={settings.softness} min={0} max={1} step={0.01} format={v => `${Math.round(v*100)}%`} onChange={v => update('softness', v)} />
