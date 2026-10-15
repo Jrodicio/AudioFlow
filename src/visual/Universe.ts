@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { ThemeGPU, withThemeSurface } from '../themes/gpu';
+import type { ThemePreset } from '../themes';
 import { damp, emptyFeatures, type AudioFeatures } from '../audio/features';
 import type { Settings, Style } from '../settings';
 import { fragmentShader, fluidShader, vertexShader } from './shaders';
@@ -16,6 +18,8 @@ const quality = {
 };
 
 export class Universe {
+  private theme: ThemeGPU;
+  setTheme(theme: ThemePreset) { this.theme.setTheme(theme); this.atmosphere.setTheme(theme); }
   private renderer: THREE.WebGLRenderer;
   private material: THREE.ShaderMaterial;
   private geometry = new THREE.PlaneGeometry(2, 2);
@@ -55,6 +59,7 @@ export class Universe {
     private onError: (message: string) => void) {
     this.currentStyle = settings().style;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+    this.theme = new ThemeGPU(this.renderer.capabilities.maxTextureSize);
     this.renderer.setPixelRatio(1);
     this.renderer.debug.onShaderError = (_gl, _program, vertex, fragment) => {
       console.error('Shader compilation failed', _gl.getShaderInfoLog(vertex), _gl.getShaderInfoLog(fragment));
@@ -62,9 +67,10 @@ export class Universe {
     };
     const initial = new THREE.Vector3();
     initial.setComponent(styles.indexOf(this.currentStyle), 1);
-    this.material = new THREE.ShaderMaterial({ vertexShader, fragmentShader: withVolumetricAtmosphere(fragmentShader),
+    this.material = new THREE.ShaderMaterial({ vertexShader, fragmentShader: withVolumetricAtmosphere(withThemeSurface(fragmentShader)),
       depthTest: false, depthWrite: false,
       uniforms: {
+        ...this.theme.uniforms,
         uResolution: { value: new THREE.Vector2(1, 1) },
         uTime: { value: this.time }, uPalette: { value: 0 },
         uStyle: { value: initial }, uAudio: { value: new THREE.Vector4() },
@@ -170,6 +176,7 @@ export class Universe {
     this.pendingTime = 0;
     this.accumulator = Math.max(0, this.accumulator - interval) % interval;
     this.elapsed += dt;
+    this.theme.advance(dt);
     const real = this.sample(dt);
     const observed = this.response.update(real,dt,this.isDemo(),s.softness);
     this.atmosphereAcoustics.update(observed,dt,this.isDemo(),s.sensitivity);
@@ -254,6 +261,7 @@ export class Universe {
     document.removeEventListener('visibilitychange',this.visibility);
     this.canvas.removeEventListener('webglcontextlost',this.contextLost);
     this.canvas.removeEventListener('webglcontextrestored',this.contextRestored);
+    this.theme.dispose();
     this.geometry.dispose();
     this.material.dispose();
     this.fluidMaterial.dispose();

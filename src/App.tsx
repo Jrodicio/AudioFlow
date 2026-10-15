@@ -3,7 +3,9 @@ import { SystemAudio, type CaptureSnapshot } from './audio/capture';
 import { clamp } from './audio/features';
 import { readSettings, STORAGE_KEY, type Settings, type Style } from './settings';
 import { Universe, type VisualStats } from './visual/Universe';
-import { DEFAULT_THEME } from './themes';
+import { type ThemePreset } from './themes';
+import { ThemeEditor } from './themes/ThemeEditor';
+import { readThemes } from './themes/library';
 
 const descriptions: Record<Style, { number: string; title: string; subtitle: string; detail: string }> = {
   atmosphere: { number: '01', title: 'Atmosphere', subtitle: 'El sonido se vuelve aire.', detail: 'Nubes de tinta · corrientes suaves · profundidad' },
@@ -38,6 +40,8 @@ function Slider({ label, value, min, max, step, format, onChange }: {
 }
 
 export function App() {
+  const [theme, setTheme] = useState<ThemePreset>(() => readThemes().selected);
+  const [themeOpen, setThemeOpen] = useState(false);
   const [settings, setSettings] = useState(readSettings);
   const [capture, setCapture] = useState<CaptureSnapshot>({ status: 'idle', message: 'La escucha está desactivada.', rms: 0 });
   const [demo, setDemo] = useState(false);
@@ -94,6 +98,7 @@ export function App() {
     return () => { input.dispose(); visual?.dispose(); audio.current = null; engine.current = null; };
   }, []);
 
+  useEffect(() => { engine.current?.setTheme(theme); }, [theme]);
   useEffect(() => { engine.current?.resize(); }, [settings.quality]);
   useEffect(() => { engine.current?.setStyle(settings.style); }, [settings.style, settings.auto]);
 
@@ -158,9 +163,9 @@ export function App() {
         <span className="scene-detail">{description.detail}</span>
       </section>
 
-      {panel && <aside className="control-panel" aria-label="Ajustes del universo">
+      {panel && !themeOpen && <aside className="control-panel" aria-label="Ajustes del universo">
         <div className="panel-heading"><div><span className="eyebrow">TU UNIVERSO</span><h2>Ajustá la materia</h2></div><button className="icon-button" onClick={() => setPanel(false)} aria-label="Cerrar ajustes"><Icon name="close" /></button></div>
-        {visualStyle === 'atmosphere' && <p className="panel-note">Tema: {DEFAULT_THEME.name}</p>}
+        <button className="theme-launch" onClick={() => setThemeOpen(true)}><span>Tema global</span><strong>{theme.name}</strong><span>Editar colores →</span></button>
         <Slider label="Sensibilidad" value={settings.sensitivity} min={0.3} max={3} step={0.05} format={v => `${v.toFixed(2)}×`} onChange={v => update('sensitivity', v)} />
         <Slider label="Intensidad" value={settings.intensity} min={0} max={1.5} step={0.01} format={v => `${Math.round(v*100)}%`} onChange={v => update('intensity', v)} />
         <Slider label="Suavidad" value={settings.softness} min={0} max={1} step={0.01} format={v => `${Math.round(v*100)}%`} onChange={v => update('softness', v)} />
@@ -170,6 +175,7 @@ export function App() {
         {storageError && <p className="storage-note" role="status">No se pudieron guardar las preferencias en este equipo.</p>}
       </aside>}
 
+      <ThemeEditor open={panel && themeOpen} onClose={() => setThemeOpen(false)} onTheme={setTheme} />
       <div className="bottom-area">
         <div className="scene-meta"><span><i />GENERADO EN TIEMPO REAL</span><span>{stats.fps || '—'} FPS <b>·</b> GPU <b>·</b> {settings.quality === 'high' ? 'ALTA' : settings.quality === 'eco' ? 'ECO' : 'EQUILIBRADA'}</span></div>
         <nav className="transport" aria-label="Estilos y captura de audio">

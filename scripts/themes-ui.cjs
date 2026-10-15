@@ -1,0 +1,68 @@
+const { app, BrowserWindow } = require('electron');
+const fs = require('node:fs/promises'), path = require('node:path');
+app.setPath('userData', path.resolve('.cache/themes-ui-profile'));
+const out = path.resolve('artifacts/themes-ui'), report = { checks: [], errors: [] };
+const assert = (ok, message) => { if (!ok) throw new Error(message); report.checks.push(message); };
+let win;
+app.whenReady().then(async () => {
+  await fs.mkdir(out, { recursive: true });
+  win = new BrowserWindow({ width: 1440, height: 900, useContentSize: true, show: false, webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false } });
+  win.showInactive();
+  win.webContents.on('console-message', d => { if (d.level === 'error') report.errors.push(d.message); });
+  const run = code => win.webContents.executeJavaScript(code, true);
+  const tick = () => run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  const click = async text => { await run(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)});if(!b)throw Error('Missing button: '+${JSON.stringify(text)});b.click()})()`); await tick(); };
+  const fill = async (selector, value) => { await run(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('Missing input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}))})()`); await tick(); };
+  const screenshot = async name => { await tick(); await fs.writeFile(path.join(out, `${name}.png`), (await win.webContents.capturePage()).toPNG()); };
+  try {
+    await win.loadURL('http://127.0.0.1:5174/'); await tick();
+    await run(`localStorage.clear();localStorage.setItem('audioflow.preferences.v1',JSON.stringify({style:'atmosphere',sensitivity:2.35,intensity:1.17,softness:.26,quality:'high',auto:false}))`);
+    await win.loadURL('http://127.0.0.1:5174/'); await tick();
+    assert(await run(`document.querySelector('.theme-launch').textContent.includes('Cold & Fire')`), 'Default official theme loaded');
+    await run(`document.querySelector('.theme-launch').click()`); await tick();
+    assert(await run(`document.querySelectorAll('.theme-color').length===13&&[...document.querySelectorAll('.theme-color input')].every(e=>e.disabled)`), 'Official colors are read-only');
+    assert(await run(`!document.querySelector('.theme-editor .danger')`), 'Official cannot be deleted');
+    await click('Duplicar');
+    assert(await run(`document.querySelectorAll('.theme-color').length===13&&!document.querySelector('.theme-color input').disabled`), 'Duplicate retains all colors and becomes editable');
+    await fill('.theme-name input', 'Aurora roja y amarilla');
+    await click('+ Rojo'); await click('+ Amarillo');
+    await fill('.color-values input', '#ff2244');
+    assert(await run(`document.querySelectorAll('.theme-color').length===15&&document.querySelector('.theme-editor h2').textContent.includes('Sin guardar')`), 'Added pigments and edits produce a dirty preview');
+    await screenshot('editor-preview');
+    await click('Guardar');
+    const library = await run(`JSON.parse(localStorage.getItem('audioflow.themes.v1'))`);
+    assert(library.presets.length === 1 && library.presets[0].colors.length === 15 && library.presets[0].name === 'Aurora roja y amarilla', 'Personal preset saved with complete colors');
+    const id = library.presets[0].id;
+    assert(await run(`localStorage.getItem('audioflow.theme-selection.v1')===${JSON.stringify(id)}`), 'Selected UUID persisted');
+    const prefs = await run(`JSON.parse(localStorage.getItem('audioflow.preferences.v1'))`);
+    assert(prefs.sensitivity === 2.35 && prefs.intensity === 1.17 && prefs.softness === .26 && prefs.quality === 'high' && prefs.style === 'atmosphere', 'Legacy settings preserved');
+    await win.loadURL('http://127.0.0.1:5174/'); await tick();
+    assert(await run(`document.querySelector('.theme-launch').textContent.includes('Aurora roja y amarilla')`), 'Personal selection restored after reload');
+    await run(`document.querySelector('.theme-launch').click()`); await tick();
+    await fill('.theme-name input', 'Renombrado'); await click('Guardar');
+    assert(await run(`JSON.parse(localStorage.getItem('audioflow.themes.v1')).presets[0].id===${JSON.stringify(id)}`), 'Overwrite preserves UUID');
+    await fill('.theme-name input', 'No guardar'); await click('Descartar cambios');
+    assert(await run(`document.querySelector('.theme-name input').value==='Renombrado'`), 'Discard restores saved snapshot');
+    // Quota failures must leave the current draft recoverable and never claim success.
+    await fill('.theme-name input', 'Cuota fallida');
+    await run(`window.__originalThemeSetItem=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k==='audioflow.themes.v1')throw Error('QuotaExceededError');return window.__originalThemeSetItem.call(this,k,v)};void 0`);
+    await click('Guardar');
+    assert(await run(`document.querySelector('.theme-message').textContent.includes('No se guardó')&&document.querySelector('.theme-editor h2').textContent.includes('Sin guardar')`), 'Failed storage write leaves dirty draft and reports error');
+    await run(`Storage.prototype.setItem=window.__originalThemeSetItem;void 0`); await click('Descartar cambios');
+    await click('Guardar como nuevo');
+    assert(await run(`JSON.parse(localStorage.getItem('audioflow.themes.v1')).presets.length===2`), 'Save as new persists independent preset');
+    await click('Eliminar preset');
+    assert(await run(`!!document.querySelector('[role=alertdialog]')&&JSON.parse(localStorage.getItem('audioflow.themes.v1')).presets.length===2`), 'Delete requires confirmation');
+    await click('Cancelar'); await click('Eliminar preset'); await click('Confirmar');
+    assert(await run(`JSON.parse(localStorage.getItem('audioflow.themes.v1')).presets.length===1&&document.querySelector('.official-note').textContent.includes('protegido')`), 'Confirmed deletion returns to protected official');
+    await run(`localStorage.setItem('audioflow.theme-selection.v1','user:missing');localStorage.setItem('audioflow.themes.v1','{broken')`);
+    await win.loadURL('http://127.0.0.1:5174/'); await tick();
+    assert(await run(`document.querySelector('.theme-launch').textContent.includes('Cold & Fire')&&JSON.parse(localStorage.getItem('audioflow.preferences.v1')).sensitivity===2.35`), 'Corrupt library falls back without losing settings');
+    await screenshot('official-restored');
+    assert(report.errors.length === 0, 'No console errors');
+    await fs.writeFile(path.join(out, 'result.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2)); app.exit(0);
+  } catch (error) {
+    report.errors.push(String(error.stack || error)); await fs.writeFile(path.join(out, 'result.json'), JSON.stringify(report, null, 2));
+    await screenshot('failure').catch(() => {}); console.error(error); app.exit(1);
+  }
+});

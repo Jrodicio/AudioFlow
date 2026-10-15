@@ -1,5 +1,10 @@
 # Cold & Fire — referencia de color y arquitectura, fase 1
 
+> Este documento conserva el inventario y las condiciones históricas de fase 1.
+> La conexión GPU, el editor y la persistencia implementados posteriormente se
+> describen en [THEME-EDITOR.md](THEME-EDITOR.md). El registro oficial y sus
+> constantes originales siguen intactos.
+
 Fecha local: 15 de octubre de 2026. Base aprobada: tag
 `atmosphere-cold-fire-plumes-v1`, commit
 `238ab193be4e2d52f3cca26e7f7cc7cb35925889`.

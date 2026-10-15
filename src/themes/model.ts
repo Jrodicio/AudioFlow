@@ -39,7 +39,7 @@ export interface OfficialThemePreset extends ThemeDefinition {
   readonly baseline: { readonly commit: string; readonly tag: string };
 }
 
-/** Future persisted snapshots. IDs must be generated once as user:<UUID>.
+/** Persisted snapshots. IDs must be generated once as user:<UUID>.
  * Editing produces a new snapshot retaining the ID; duplication gets a new ID. */
 export interface UserThemePreset extends ThemeDefinition {
   readonly id: `user:${string}`;
@@ -51,8 +51,7 @@ export interface UserThemePreset extends ThemeDefinition {
 
 export type ThemePreset = OfficialThemePreset | UserThemePreset;
 
-/** Separate future storage envelope; never serialize officials into user data.
- * This phase defines the contract only, without a storage or editing service. */
+/** Separate storage envelope; never serialize officials into user data. */
 export interface UserThemeLibrary {
   readonly schemaVersion: 1;
   readonly presets: readonly UserThemePreset[];

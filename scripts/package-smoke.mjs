@@ -54,6 +54,28 @@ try {
   report=result.value;
   if(!report.canvas||report.error||!report.bridge)throw new Error(`Packaged rendering failed: ${JSON.stringify(report)}`);
   if(!report.debugHidden)throw new Error('Packaged diagnostics should start hidden');
+  // Exercise UUID generation, local storage and preview in the secure shipping
+  // protocol, in this test's isolated profile. No capture is started.
+  const evaluate=async expression=>(await call('Runtime.evaluate',{expression,returnByValue:true})).result.value;
+  const themeClick=async label=>{
+    const found=await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(label)});b?.click();return !!b;})()`);
+    if(!found)throw new Error(`Packaged theme action missing: ${label}`);
+    await delay(100);
+  };
+  await evaluate(`document.querySelector('.theme-launch').click()`);await delay(100);
+  await evaluate(`(()=>{const s=document.querySelector('.theme-select select');s.value='cold-and-fire';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await delay(100);
+  await themeClick('Duplicar');await themeClick('+ Rojo');await themeClick('+ Amarillo');await themeClick('Guardar');
+  report.theme=await evaluate(`(()=>{const id=localStorage.getItem('audioflow.theme-selection.v1');const p=JSON.parse(localStorage.getItem('audioflow.themes.v1')).presets.find(p=>p.id===id);return {id,colors:p?.colors.length,origin:p?.origin,message:document.querySelector('.theme-message')?.textContent,secure:window.isSecureContext};})()`);
+  if(!report.theme.secure||!report.theme.id?.startsWith('user:')||report.theme.colors!==15||report.theme.origin!=='user')throw new Error('Packaged theme saving failed');
+  await call('Page.reload');await delay(2500);
+  report.theme.restored=await evaluate(`document.querySelector('.theme-launch')?.textContent.includes('Personal')`);
+  if(!report.theme.restored)throw new Error('Packaged theme selection did not survive reload');
+  await evaluate(`document.querySelector('.theme-launch').click()`);await delay(100);
+  await delay(1500);
+  const themeScreenshot=await call('Page.captureScreenshot',{format:'png'});
+  await mkdir('artifacts',{recursive:true});await writeFile('artifacts/packaged-theme.png',Buffer.from(themeScreenshot.data,'base64'));
+  await evaluate(`(()=>{const s=document.querySelector('.theme-select select');s.value='cold-and-fire';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await delay(100);
+  await evaluate(`document.querySelector('.theme-editor header button').click()`);await delay(100);
   // F3 must work even with a slider focused.
   await call('Runtime.evaluate',{expression:`document.querySelector('input[type="range"]').focus()`});
   await call('Input.dispatchKeyEvent',{type:'keyDown',key:'F3',code:'F3',windowsVirtualKeyCode:114});

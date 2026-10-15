@@ -1,4 +1,6 @@
 ﻿import * as THREE from 'three';
+import { ThemeGPU, withThemeTransport, withThemeVolume, withThemeSource } from '../themes/gpu';
+import type { ThemePreset } from '../themes';
 import type { Quality } from '../settings';
 import { transportShader, volumeRenderShader, volumeVertex, pigmentSourceShader } from './atmosphereShaders';
 import { makeVolumeDetailData } from './volumeDetail';
@@ -47,6 +49,8 @@ type Uniforms = Record<string,THREE.IUniform>;
  * All readbacks are confined to the separate GPU validation harness. */
 export class AtmosphereVolume {
   readonly supported: boolean;
+  private theme: ThemeGPU;
+  setTheme(theme: ThemePreset) { this.theme.setTheme(theme); }
   private states: THREE.WebGLRenderTarget[] = [];
   private image: THREE.WebGLRenderTarget | null = null;
   private historyImage: THREE.WebGLRenderTarget | null = null;
@@ -77,6 +81,7 @@ export class AtmosphereVolume {
   private plumes = new AtmospherePlumes();
 
   constructor(private renderer: THREE.WebGLRenderer,private acoustic: Uniforms,private events?: AtmosphereAcoustics) {
+    this.theme = new ThemeGPU(renderer.capabilities?.maxTextureSize);
     this.supported = renderer.extensions.has('EXT_color_buffer_float');
   }
   get texture() { return this.image?.texture ?? null; }
@@ -121,7 +126,7 @@ export class AtmosphereVolume {
     const grid={value:new THREE.Vector3(GAS_GRID.x,GAS_GRID.y,GAS_GRID.z)};
     const tiles={value:new THREE.Vector2(GAS_GRID.columns,GAS_GRID.rows)};
     this.states=[0,1,2].map(()=>new THREE.WebGLRenderTarget(GAS_GRID.x*GAS_GRID.columns,GAS_GRID.y*GAS_GRID.rows,{
-      count:3,type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
+      count:4,type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
       depthBuffer:false,stencilBuffer:false,generateMipmaps:false,
     }));
     this.pigmentSource=new THREE.WebGLRenderTarget(GAS_GRID.x*GAS_GRID.columns,GAS_GRID.y*GAS_GRID.rows,{
@@ -129,7 +134,7 @@ export class AtmosphereVolume {
       type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
       depthBuffer:false,stencilBuffer:false,generateMipmaps:false,
     });
-    this.seedPigment=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:pigmentSourceShader,
+    this.seedPigment=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:withThemeSource(pigmentSourceShader),
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{uGrid:grid,uTiles:tiles}});
     const size=volumeImageSize(this.width,this.height,this.quality,this.adaptive);
     this.image=new THREE.WebGLRenderTarget(size.width,size.height,{
@@ -144,8 +149,9 @@ export class AtmosphereVolume {
     this.detail.wrapS=this.detail.wrapT=this.detail.wrapR=THREE.RepeatWrapping;
     this.detail.minFilter=THREE.LinearMipmapLinearFilter; this.detail.magFilter=THREE.LinearFilter;
     this.detail.generateMipmaps=true; this.detail.needsUpdate=true;
-    this.transport=new THREE.ShaderMaterial({ vertexShader:volumeVertex,fragmentShader:transportShader,
+    this.transport=new THREE.ShaderMaterial({ vertexShader:volumeVertex,fragmentShader:withThemeTransport(transportShader),
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{
+        uChromatic:{value:this.states[1].textures[3]},uTransportChromatic:{value:this.states[2].textures[3]},
         uGrid:grid,uTiles:tiles,uPass:{value:0},uDt:{value:GAS_STEP},uSimulationTime:{value:0},uIntensity:{value:0},
         uAcousticGain:this.acoustic.uAcousticGain ?? {value:1},uDiagnostic:{value:0},
         uPlumes:{value:this.plumes.sources},uPlumePhases:{value:this.plumes.phases},
@@ -156,8 +162,9 @@ export class AtmosphereVolume {
         uBands:this.acoustic.uBands,uSustained:this.acoustic.uSustained,uSalience:this.acoustic.uSalience,
         uEvents:this.acoustic.uEvents,uEventBands:this.acoustic.uEventBands,uContext:this.acoustic.uContext,
       } });
-    this.shading=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:volumeRenderShader,
+    this.shading=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:withThemeVolume(volumeRenderShader),
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{
+        ...this.theme.uniforms,uChromatic:{value:this.states[0].textures[3]},
         uGrid:grid,uTiles:tiles,uMatter:{value:this.states[0].textures[1]},
         uPigment:{value:this.states[0].textures[2]},
         uDetail:{value:this.detail},
@@ -173,6 +180,7 @@ export class AtmosphereVolume {
   advance(dt: number,intensity: number) {
     if(!this.supported || this.disposed) { this.events?.discardImpulses(); return; }
     this.allocate();
+    this.theme.advance(dt);
     const renderer=this.renderer,uniforms=this.transport!.uniforms;
     const previousTarget=renderer.getRenderTarget();
     try {
@@ -184,6 +192,7 @@ export class AtmosphereVolume {
         uniforms.uPass.value=0;
         uniforms.uVelocity.value=this.states[1].textures[0]; uniforms.uMatter.value=this.states[1].textures[1];
         uniforms.uPigment.value=this.states[1].textures[2]; uniforms.uTransportPigment.value=this.states[2].textures[2];
+        uniforms.uChromatic.value=this.states[1].textures[3]; uniforms.uTransportChromatic.value=this.states[2].textures[3];
         uniforms.uTransportVelocity.value=this.states[2].textures[0]; uniforms.uTransportMatter.value=this.states[2].textures[1];
         renderer.setRenderTarget(this.states[0]); renderer.render(this.transportScene,this.camera);
         this.index=0; this.initialized=true;
@@ -197,13 +206,14 @@ export class AtmosphereVolume {
         }
         this.plumes.step(GAS_STEP);
         const previous=this.states[this.index],next=this.states[1-this.index],scratch=this.states[2];
+        uniforms.uChromatic.value=previous.textures[3]; uniforms.uTransportChromatic.value=previous.textures[3];
         uniforms.uVelocity.value=previous.textures[0]; uniforms.uMatter.value=previous.textures[1];
         uniforms.uPigment.value=previous.textures[2]; uniforms.uTransportPigment.value=previous.textures[2];
         uniforms.uTransportVelocity.value=previous.textures[0]; uniforms.uTransportMatter.value=previous.textures[1];
         uniforms.uPass.value=1;
         renderer.setRenderTarget(scratch); renderer.render(this.transportScene,this.camera);
         uniforms.uTransportVelocity.value=scratch.textures[0]; uniforms.uTransportMatter.value=scratch.textures[1];
-        uniforms.uTransportPigment.value=scratch.textures[2];
+        uniforms.uTransportPigment.value=scratch.textures[2]; uniforms.uTransportChromatic.value=scratch.textures[3];
         uniforms.uPass.value=2; uniforms.uSimulationTime.value=this.simulationTime;
         renderer.setRenderTarget(next); renderer.render(this.transportScene,this.camera);
         // Each event starts one emitter. Subsequent steps spend only the next
@@ -219,6 +229,7 @@ export class AtmosphereVolume {
     const previousTarget=this.renderer.getRenderTarget();
     try {
       const previous=this.image; this.image=this.historyImage; this.historyImage=previous;
+      this.shading.uniforms.uChromatic.value=this.states[this.index].textures[3];
       this.shading.uniforms.uMatter.value=this.states[this.index].textures[1];
       this.shading.uniforms.uPigment.value=this.states[this.index].textures[2];
       this.shading.uniforms.uHistory.value=this.historyImage.texture;
@@ -247,6 +258,7 @@ export class AtmosphereVolume {
 
   dispose() {
     if(this.disposed) return; this.disposed=true;
+    this.theme.dispose();
     this.states.forEach(target=>target.dispose()); this.states=[];
     this.image?.dispose(); this.image=null;
     this.historyImage?.dispose(); this.historyImage=null;

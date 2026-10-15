@@ -14,6 +14,8 @@
     "build": "npm run typecheck && npm run build:electron && node scripts/icon.mjs && vite build",
     "start": "node scripts/run-electron.mjs .",
     "test": "tsx --test tests/*.test.ts",
+    "test:themes:ui": "node scripts/test-atmosphere.mjs --theme-ui",
+    "test:themes:gpu": "node scripts/test-atmosphere.mjs --themes",
     "test:atmosphere": "node scripts/test-atmosphere.mjs",
     "test:atmosphere:temporal": "node scripts/test-atmosphere.mjs --temporal",
     "test:atmosphere:plumes": "node scripts/test-atmosphere.mjs --plumes",

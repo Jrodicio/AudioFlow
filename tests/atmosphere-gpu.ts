@@ -67,6 +67,7 @@ function read(v:AtmosphereVolume,attachment:number) {
 }
 let lastDensity:Float32Array|null=null;
 function stats() {
+  const error=renderer.getContext().getError();if(error)errors.push('WebGL error '+error);
   const velocity=read(volume,0),matter=read(volume,1);
   const pigment=read(volume,2),referenceMatter=withControl ? read(control,1) : null,referencePigment=withControl ? read(control,2) : null;
   const reference=withControl ? read(control,0) : null;
@@ -229,7 +230,7 @@ function forceMetrics() {
     'outVelocity=vec4(ambientForce,0);outMatter=vec4(force-ambientForce,0);outPigment=vec4(0);return;\nvec3 kick=vec3(0);float bornDensity=0.0;vec4 bornPigment=vec4(0);\n'+
     transportShader.slice(transportShader.indexOf('  // Velocity is advected'));
   const legacyUniforms={...s.transport.uniforms,uBands:{value:response.bands},uSustained:{value:response.sustained},uSalience:{value:response.salience}};
-  const legacy=s.transport.clone();legacy.fragmentShader=before;legacy.uniforms=legacyUniforms;
+  const legacy=s.transport.clone();legacy.fragmentShader=before.replace('void main() {','layout(location=3) out vec4 outExtra;\nvoid main() {').replace('outVelocity=vec4(ambientForce,0);','outExtra=vec4(0);outVelocity=vec4(ambientForce,0);');legacy.uniforms=legacyUniforms;
   const mesh=s.transportScene.children[0] as THREE.Mesh;
   const result:Record<string,unknown>={};
   s.transport.uniforms.uDiagnostic.value=1;
@@ -281,16 +282,16 @@ function dispose() {volume.dispose();control.dispose();display.dispose();copyMat
 // Event counterfactual: fork the CURRENT gas before each known PCM onset. Both
 // branches then receive identical sustained features; only the new kicks differ.
 const copyMaterial=new THREE.ShaderMaterial({vertexShader:volumeVertex,glslVersion:THREE.GLSL3,
-  fragmentShader:`in vec2 vUv;uniform sampler2D a;uniform sampler2D b;uniform sampler2D c;
-  layout(location=0) out vec4 x;layout(location=1) out vec4 y;layout(location=2) out vec4 z;
-  void main(){x=texture(a,vUv);y=texture(b,vUv);z=texture(c,vUv);}`,
-  uniforms:{a:{value:null},b:{value:null},c:{value:null}},depthTest:false});
+  fragmentShader:`in vec2 vUv;uniform sampler2D a;uniform sampler2D b;uniform sampler2D c;uniform sampler2D d;
+  layout(location=0) out vec4 x;layout(location=1) out vec4 y;layout(location=2) out vec4 z;layout(location=3) out vec4 w;
+  void main(){x=texture(a,vUv);y=texture(b,vUv);z=texture(c,vUv);w=texture(d,vUv);}`,
+  uniforms:{a:{value:null},b:{value:null},c:{value:null},d:{value:null}},depthTest:false});
 const copyScene=new THREE.Scene();copyScene.add(new THREE.Mesh(geometry,copyMaterial));
 function forkCurrent() {
   type Fork=Inspection & {simulationTime:number;accumulator:number;lastDrawTime:number;historyReady:boolean;historyImage:THREE.WebGLRenderTarget;plumes:AtmospherePlumes};
   const a=volume as unknown as Fork,b=control as unknown as Fork;
   const src=a.states[a.index],dst=b.states[b.index];
-  [copyMaterial.uniforms.a.value,copyMaterial.uniforms.b.value,copyMaterial.uniforms.c.value]=src.textures;
+  [copyMaterial.uniforms.a.value,copyMaterial.uniforms.b.value,copyMaterial.uniforms.c.value,copyMaterial.uniforms.d.value]=src.textures;
   renderer.setRenderTarget(dst);renderer.render(copyScene,camera);renderer.setRenderTarget(null);
   renderer.copyTextureToTexture(a.image.texture,b.image.texture);
   renderer.copyTextureToTexture(a.image.texture,b.historyImage.texture);
@@ -304,6 +305,7 @@ function impulseMetrics() {
   u.uVelocity.value=u.uTransportVelocity.value=src.textures[0];
   u.uMatter.value=u.uTransportMatter.value=src.textures[1];
   u.uPigment.value=u.uTransportPigment.value=src.textures[2];
+  u.uChromatic.value=u.uTransportChromatic.value=src.textures[3];
   u.uPass.value=2;u.uDiagnostic.value=1;
   renderer.setRenderTarget(target);renderer.render(s.transportScene,s.camera);
   const data=new Uint16Array(target.width*target.height*4);
