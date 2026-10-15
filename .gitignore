@@ -8,3 +8,5 @@ build/
 .env.local
 *.log
 *.tsbuildinfo
+.cache/
+artifacts/

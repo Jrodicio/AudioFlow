@@ -1,0 +1,51 @@
+{
+  "name": "audioflow",
+  "productName": "AudioFlow",
+  "version": "1.0.0",
+  "description": "Un universo procedural que respira con el audio de Windows.",
+  "author": "AudioFlow",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "npm run build:electron && node scripts/dev.mjs",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "build": "npm run typecheck && npm run build:electron && node scripts/icon.mjs && vite build",
+    "start": "node scripts/run-electron.mjs .",
+    "test": "tsx --test tests/*.test.ts",
+    "test:atmosphere": "node scripts/test-atmosphere.mjs",
+    "test:smoke": "npm run build && node scripts/run-electron.mjs scripts/smoke.cjs",
+    "test:package": "node scripts/package-smoke.mjs",
+    "dist:win": "npm run build && node scripts/package.mjs",
+    "pack:win": "npm run build && node scripts/package.mjs --dir"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/three": "^0.180.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.12",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.0"
+  },
+  "build": {
+    "appId": "local.audioflow.desktop",
+    "productName": "AudioFlow",
+    "asar": true,
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "dist-electron/**/*", "package.json"],
+    "win": { "target": ["nsis", "portable"], "icon": "assets/icon.ico" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "artifactName": "AudioFlow-${version}-Setup.${ext}" },
+    "portable": { "artifactName": "AudioFlow-${version}-Portable.${ext}" },
+    "npmRebuild": false
+  }
+}
