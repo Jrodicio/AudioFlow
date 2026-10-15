@@ -1,5 +1,9 @@
 ﻿# Atmosphere: fuerzas acústicas y pigmento volumétrico
 
+> Esta es la etapa anterior de fuerzas y pigmentos. La ruta actual de eventos
+> discretos y sus límites está en [ATMOSPHERE-SYNC.md](ATMOSPHERE-SYNC.md).
+> El frente prolongado descrito abajo se sustituyó por impulsos únicos.
+
 El volumen existente se conserva: 96 × 72 × 48 celdas, atlas 8 × 6,
 velocidad persistente, advección a paso fijo 1/60 s, corrección limitada
 MacCormack, detalle 3D y raymarching con absorción y sombras internas.

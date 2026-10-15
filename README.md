@@ -2,6 +2,15 @@
 
 Aplicación de escritorio para Windows que transforma el audio de salida en un material procedural animado. Electron + React + TypeScript + Vite + Three.js / GLSL. Todo el funcionamiento es local: sin micrófono, servicios externos, fondos de imagen, grabación ni reproducción del audio capturado.
 
+Atmosphere separa ahora las corrientes sostenidas de los impulsos acústicos
+discretos. Diagnóstico, pruebas A–F y latencias medidas en
+[sincronización audiovisual](docs/ATMOSPHERE-SYNC.md) y
+[validación temporal](docs/ATMOSPHERE-VALIDATION.md).
+
+La evolución actual añade [plumas volumétricas con nacimiento progresivo](docs/ATMOSPHERE-PLUMES.md),
+materia reactiva transportada y más definición. Banco reproducible:
+`npm.cmd run test:atmosphere:plumes`.
+
 ## Ejecutar en Windows con PowerShell
 
 Requiere Windows 10/11 de 64 bits, Node.js 22.12 o posterior y una GPU con WebGL 2. Los comandos usan `npm.cmd` para funcionar también cuando PowerShell bloquea `npm.ps1`.

@@ -83,10 +83,14 @@ vec3 curlForce(vec3 p,vec3 k,vec3 phase) {
 
 export const pigmentSourceShader = /* glsl */ `
 precision highp float;
-out vec4 outSource;
+layout(location=0) out vec4 outSource;
+layout(location=1) out vec4 outHumidity;
 ${volumeCoordinates}
 ${noise}
-void main() { outSource=initialPigment(voxelPosition()); }
+void main() {
+  vec3 p=voxelPosition();
+  outSource=initialPigment(p); outHumidity=vec4(initialMatter(p).a,0,0,0);
+}
 `;
 
 export const transportShader = /* glsl */ `
@@ -102,6 +106,7 @@ uniform sampler2D uTransportMatter;
 uniform sampler2D uPigment;
 uniform sampler2D uTransportPigment;
 uniform sampler2D uPigmentSource;
+uniform sampler2D uHumiditySource;
 uniform int uPass; // 0 seed once; 1 forward transport; 2 limited correction/forces
 uniform float uDt;
 uniform float uSimulationTime;
@@ -113,6 +118,8 @@ uniform float uSustained[7];
 uniform float uSalience[7];
 uniform vec4 uEvents[12];
 uniform float uEventBands[12];
+uniform vec4 uPlumes[16]; // XYZ origin and event strength, fixed at birth
+uniform vec4 uPlumePhases[16]; // age, band, integrated emission dose, duration
 uniform vec4 uContext;
 ${volumeCoordinates}
 ${noise}
@@ -120,7 +127,7 @@ void main() {
   vec3 p=voxelPosition(),cell=1.0/uGrid;
   if(uPass==0) {
     vec4 matter=initialMatter(p);
-    outVelocity=vec4(curlForce(p,vec3(4,5,3),vec3(1,2,3))*.008,matter.a);
+    outVelocity=vec4(curlForce(p,vec3(4,5,3),vec3(1,2,3))*.008,0);
     outPigment=initialPigment(p);
     outMatter=matter; return;
   }
@@ -160,6 +167,16 @@ void main() {
   corrected=clamp(corrected,lo,hi);
   dye=clamp(dye,dyeLo,dyeHi);
   vec4 v=volumeSample(uTransportVelocity,p);
+  // W is now advected reactive density, not a stationary humidity reservoir.
+  // Cache that original reservoir separately so new smoke can have a finite
+  // lifetime without evaporating the autonomous base or resetting the field.
+  float reactive=min(max(0.0,v.w),corrected.a);
+  float evaporated=reactive*(1.0-exp(-uDt*.48));
+  reactive-=evaporated; corrected.a-=evaporated;
+  float ambient=max(0.0,corrected.a-reactive);
+  float replenished=mix(ambient,volumeSample(uHumiditySource,p).r,1.0-exp(-uDt*.045));
+  float condensed=max(0.0,replenished-ambient);
+  corrected.a=clamp(replenished+reactive,0.0,1.0);
   float t=uSimulationTime;
   vec3 force=curlForce(p,vec3(4.1,5.3,3.7),vec3(t*.045,t*-.032,t*.038))*.0055;
   force+=curlForce(p,vec3(11.7,9.1,13.3),vec3(2.3-t*.09,4.7+t*.07,t*.05))*.002;
@@ -194,45 +211,74 @@ void main() {
       acousticForce+=curlForce(d,vec3(39,33,35),vec3(t*.6,band,-t*.5))*mask*level*.050*edge;
     }
   }
-  for(int i=0;i<12;i++) {
-    vec4 e=uEvents[i];
-    if(e.z>5.0 || e.w<.005) continue;
-    vec3 center=vec3(e.xy,.20+fract(uEventBands[i]*.173+dot(e.xy,vec2(.73,1.31)))*.60);
+  vec3 kick=vec3(0);
+  float bornDensity=0.0;
+  vec4 bornPigment=vec4(0);
+  for(int i=0;i<16;i++) {
+    vec4 e=uPlumes[i],phase=uPlumePhases[i];
+    if(e.w<=0.0 || phase.z<=0.0) continue;
+    float band=phase.y,age=phase.x,dose=phase.z;
+    vec3 axis=normalize(vec3(.65*sin(band*1.7+e.x*8.0),.8,.45*cos(band*2.1+e.y*7.0)));
+    vec3 side=normalize(cross(axis,vec3(0,0,1))),across=cross(axis,side);
+    vec3 localFlow=volumeSample(uVelocity,e.xyz).xyz;
+    float travel=band<2.0 ? .055 : (band<5.0 ? .10 : .16);
+    vec3 center=e.xyz+axis*age*travel+localFlow*age;
     vec3 d=p-center;
-    float r=length(d),radius=.045+e.z*(.12+uEventBands[i]*.006);
-    // Warped thick pressure front and tangential wake give a local impulse
-    // lasting ~0.4 s, without drawing a spherical surface in the image.
-    float warpedRadius=radius+.018*sin(dot(d,vec3(19,13,17)));
-    float shell=exp(-pow((r-warpedRadius)*15.0,2.0));
-    float impulse=e.w*exp(-e.z*2.4)*shell*uIntensity*uAcousticGain;
-    vec3 axis=normalize(vec3(.4+sin(uEventBands[i]),1,.7));
-    acousticForce+=(d/max(r,.04)*.24+cross(axis,d)*.20)*impulse;
+    float width=band<2.0 ? .105 : (band<5.0 ? .066 : .034);
+    width*=1.0+.16*min(1.5,uIntensity)*e.w;
+    float lengthScale=band<2.0 ? .135 : (band<5.0 ? .15 : .16);
+    if(dot(d,d)>pow(max(lengthScale,width)*2.6,2.0)) continue;
+    vec3 q=vec3(dot(d,side)/width,dot(d,axis)/lengthScale,dot(d,across)/(width*.8));
+    float seed=dot(e.xyz,vec3(17,23,29))+band;
+    // Bent ellipsoidal ribbons, not spheres or screen-aligned sprites. This
+    // pattern is fixed in the emitting parcel's frame, with no time-noise pops.
+    q.x+=sin(q.y*3.2+seed)*.32;
+    q.z+=cos(q.y*4.1+seed)*.24;
+    float radius=length(q);
+    float profile=exp(-dot(q,q)*1.65)*(1.0-smoothstep(1.4,2.1,radius));
+    float structure=.68+.32*noise3(p*(band<2.0 ? 22.0 : 37.0)+seed);
+    if(band>=5.0) profile*=.48+.52*pow(.5+.5*sin(q.y*6.0+q.z*2.0+seed),2.0);
+    profile*=structure;
+    vec3 shape;
+    if(band<2.0) {
+      shape=axis*.65+d/width*.45+cross(axis,d)/width*.25;
+    } else if(band<5.0) {
+      shape=axis*.4+cross(axis,d)/width*.9+curlForce(d,vec3(15,19,13),vec3(seed,1,2))*.35;
+    } else {
+      shape=axis*.45+curlForce(d,vec3(39,33,35),vec3(seed,2,4))*.65;
+    }
+    kick+=shape*profile*e.w*uIntensity*dose*.048;
+    // Spend a bounded density budget over attack/bloom/release. Compression
+    // keeps simultaneous births below unit density rather than saturating it.
+    float densityBudget=band<2.0 ? 2.5 : (band<5.0 ? 2.15 : 2.35);
+    float addition=(1.0-corrected.a)*(1.0-exp(-profile*dose*densityBudget*sqrt(e.w)*uIntensity));
+    corrected.a+=addition;reactive+=addition;bornDensity+=addition;
+    vec3 cool=band<2.0 ? vec3(.025,.095,.38) : (band<5.0 ? vec3(.025,.49,.60) : vec3(.23,.79,.87));
+    float warm=band<2.0 ? .08+.15*e.w : (band<5.0 ? .03+.12*e.w*e.w : .015);
+    bornPigment+=vec4(cool,warm)*addition;
   }
+  kick*=min(1.0,.012/max(length(kick),.000001));
   force=ambientForce+acousticForce;
   if(uDiagnostic==1) {
     outVelocity=vec4(ambientForce,0); outMatter=vec4(acousticForce,0);
-    outPigment=vec4(0); return;
+    outPigment=vec4(kick,bornDensity); return;
   }
   // Velocity is advected, forced, then damped. It continues transporting matter
-  // after the audio disappears; no audio variable sets position, scale or light.
-  v.xyz=v.xyz*exp(-uDt*.26)+force*uDt;
+  // after the audio disappears; global scale, clock and light remain unchanged.
+  v.xyz=v.xyz*exp(-uDt*.26)+force*uDt+kick;
+  if(bornDensity>0.0) dye=mix(dye,bornPigment/max(.000001,bornDensity),bornDensity/max(.000001,corrected.a));
   float speed=length(v.xyz);
   v.xyz*=min(1.0,.085/max(speed,.000001));
   vec3 boundary=smoothstep(cell*.5,cell*3.0,p)*smoothstep(cell*.5,cell*3.0,1.0-p);
   v.xyz*=boundary;
-  // W retains the initial humidity reservoir, not transported pigment. Smooth
-  // condensation/evaporation over 22 s counteracts transport loss without a reset
-  // or exposing a static image. Existing density continues moving through it.
-  float transportedDensity=corrected.a;
-  corrected.a=mix(corrected.a,originalVelocity.w,1.0-exp(-uDt*.045));
   // Newly condensed matter carries dye from an independent, seeded reservoir.
   // A very slow dye feed prevents irreversible numerical homogenization over
   // minutes. Existing dye is still advected/stretching, never reset or recolored
   // by audio. The source is cached once rather than recomputing 3D noise/step.
-  float fresh=max(0.0,corrected.a-transportedDensity)/max(.04,corrected.a);
+  float fresh=condensed/max(.04,corrected.a);
   float dyeFeed=1.0-(1.0-fresh)*exp(-uDt*.025);
   dye=mix(dye,volumeSample(uPigmentSource,p),dyeFeed);
-  outVelocity=vec4(v.xyz,originalVelocity.w);
+  outVelocity=vec4(v.xyz,clamp(reactive,0.0,corrected.a));
   // Fine structures have a finite lifetime: continuously relax material strain
   // instead of resetting UVW maps or letting old coordinates fold into aliases.
   outMatter=vec4(clamp(corrected.rgb*exp(-uDt*.08),-1.0,1.0),clamp(corrected.a,0.0,1.0));
@@ -254,15 +300,18 @@ uniform vec2 uResolution;
 uniform int uSteps;
 uniform vec2 uDepthWindow; // Full range in production; isolated slices in GPU tests.
 ${volumeCoordinates}
-float rayFootprint;
+vec3 rayFootprint;
 float densityAt(vec3 p,vec4 matter) {
   vec3 material=p+matter.rgb;
-  float broadLod=clamp(log2(max(.001,rayFootprint*64.0*4.2*.35)),.6,3.0);
-  float fineLod=clamp(log2(max(.001,rayFootprint*64.0*13.1*.35)),1.0,4.0);
+  float broadLod=clamp(log2(max(.001,length(rayFootprint*4.2)*64.0*.32)),.5,3.0);
+  vec3 filamentScale=vec3(8.6,2.7,5.1);
+  float fineLod=clamp(log2(max(.001,length(rayFootprint*filamentScale)*64.0*.40)),.65,4.0);
   vec2 broad=textureLod(uDetail,material*4.2,broadLod).rg;
-  float fine=textureLod(uDetail,material*13.1,fineLod).g;
-  float detail=broad.r*.50+broad.g*.25+fine*.25;
-  float erosion=.24-(detail-.5)*.8;
+  // Anisotropic, advected material detail forms longer wisps. Keeping its depth
+  // frequency resolvable avoids filtering every screen direction into a blur.
+  float fine=textureLod(uDetail,material*filamentScale+vec3(broad.g*.18,0,broad.r*.18),fineLod).g;
+  float detail=broad.r*.40+broad.g*.25+(.5+(fine-.5)*1.8)*.35;
+  float erosion=.24-(detail-.5)*1.15;
   return max(0.0,matter.a-erosion)*2.2;
 }
 void main() {
@@ -281,14 +330,14 @@ void main() {
   vec3 background=mix(vec3(.006,.020,.052),vec3(.014,.052,.087),vUv.y);
   if(far<=near) {outColor=vec4(background,1);return;}
   float stepLength=(far-near)/float(uSteps);
-  rayFootprint=length(ray*stepLength/extent*.5);
+  rayFootprint=abs(ray*stepLength/extent*.5);
   // Interleaved sampling removes coherent slice bands. Its subpixel noise is
   // integrated over successive frames instead of appearing as animated grain.
   float jitter=fract(52.9829189*fract(dot(gl_FragCoord.xy+mod(uFrame,8.0)*vec2(5.588,3.117),vec2(.06711056,.00583715))));
   float transmission=1.0;
   vec3 color=vec3(0);
   vec3 lightDirection=normalize(vec3(-.65,.8,.45));
-  for(int i=0;i<80;i++) {
+  for(int i=0;i<96;i++) {
     if(i>=uSteps || transmission<.015) break;
     float distance=near+(float(i)+jitter)*stepLength;
     vec3 world=origin+ray*distance;
@@ -299,7 +348,7 @@ void main() {
     vec3 lightNear=p+lightDirection*.055,lightFar=p+lightDirection*.15;
     float closeShadow=densityAt(lightNear,volumeSample(uMatter,lightNear));
     float farShadow=densityAt(lightFar,volumeSample(uMatter,lightFar));
-    float light=exp(-(closeShadow*.8+farShadow*1.3)*2.2);
+    float light=exp(-(closeShadow*.8+farShadow*1.3)*2.35);
     float edge=clamp((density-closeShadow)*3.0+.35,0.0,1.0);
     vec4 pigment=volumeSample(uPigment,p);
     vec3 albedo=mix(pigment.rgb,vec3(.88,.43,.12),smoothstep(.04,.30,pigment.a));

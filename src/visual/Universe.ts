@@ -102,7 +102,7 @@ export class Universe {
       ...shared,uBands:{value:this.atmosphereAcoustics.bands},
       uSustained:{value:this.atmosphereAcoustics.sustained},uSalience:{value:this.atmosphereAcoustics.salience},
       uAcousticGain:this.atmosphereAcoustics.gain,
-    });
+    },this.atmosphereAcoustics);
     shared.uVolumeEnabled.value = this.atmosphere.supported ? 1 : 0;
     const mesh = new THREE.Mesh(this.geometry, this.material);
     mesh.frustumCulled = false;
@@ -148,6 +148,7 @@ export class Universe {
   };
   private visibility = () => {
     cancelAnimationFrame(this.animation);
+    this.atmosphere.stopEmission();
     this.last = 0;
     this.accumulator = 0;
     this.pendingTime = 0;
@@ -171,7 +172,7 @@ export class Universe {
     this.elapsed += dt;
     const real = this.sample(dt);
     const observed = this.response.update(real,dt,this.isDemo(),s.softness);
-    this.atmosphereAcoustics.update(observed,dt,this.isDemo());
+    this.atmosphereAcoustics.update(observed,dt,this.isDemo(),s.sensitivity);
     const f = this.blended;
     f.energy = damp(f.energy,observed.energy,dt,.15);
     f.bass = damp(f.bass,observed.bass,dt,.12);
@@ -217,7 +218,7 @@ export class Universe {
       this.atmosphere.advance(dt,s.intensity);
       this.atmosphere.draw();
       this.material.uniforms.uAtmosphereVolume.value=this.atmosphere.texture;
-    }
+    } else this.atmosphere.stopEmission();
     this.renderer.render(this.scene,this.camera);
     this.frameCount++;
     if (this.frameSeconds > .7) {
@@ -236,6 +237,8 @@ export class Universe {
         `Estructura ${fmt(this.response.structure)} · brillo ${fmt(this.response.brightness)}`,
         `GPU: líquido ${typeLabel(this.fluidTargets[0].texture.type)} 512² · ${Math.round(this.frameCount/this.frameSeconds)} FPS`,
         this.atmosphere.debug,
+        `Eventos Atmosphere ${this.atmosphereAcoustics.detected} · aplicados ${this.atmosphereAcoustics.applied} · pendientes ${this.atmosphereAcoustics.pending} · descartados ${this.atmosphereAcoustics.dropped}`,
+        `Último ${Number.isFinite(this.atmosphereAcoustics.lastEventAge) ? Math.round(this.atmosphereAcoustics.lastEventAge*1000)+' ms' : '—'} · bandas ${this.atmosphereAcoustics.activeBands.map(i=>BAND_NAMES[i]).join(', ') || '—'} · rápida ${fmt(this.atmosphereAcoustics.rapid*s.intensity)} · sostenida ${fmt(this.atmosphereAcoustics.sustainedLevel*s.intensity)} · estelas ${this.atmosphereAcoustics.active}`,
         `Atmosphere: ganancia ${fmt(this.atmosphereAcoustics.gain.value)} · bandas ${Array.from(this.atmosphereAcoustics.bands,fmt).join(' ')} · eventos ${Array.from(this.response.eventBands).filter((_,i)=>this.response.events[i*4+2]<2 && this.response.events[i*4+3]>.005).length} · Liquid ${liquidVisible ? 'activo' : 'pausado'}`,
       ].join('\n');
       this.onStats({ fps: Math.round(this.frameCount/this.frameSeconds), scale: this.scale, style: this.currentStyle, debug });

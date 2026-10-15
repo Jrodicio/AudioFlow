@@ -1,148 +1,120 @@
-﻿# Validación de Atmosphere: fuerzas y pigmentos
+# Validación de Atmosphere: sincronización temporal
 
-Fecha local: **15 de octubre de 2026**.
+Fecha local: **15 de octubre de 2026**. Arquitectura y límites en
+[ATMOSPHERE-SYNC.md](ATMOSPHERE-SYNC.md).
 
-Se aprobaron **22 pruebas unitarias**, TypeScript de aplicación y Electron,
-compilación adicional del banco TypeScript, build de producción, banco GPU y
-prueba general Electron. Se regeneraron portable e instalador NSIS x64, versión
-1.0.0. Los hashes de los ejecutables están en release/SHA256SUMS.txt.
+> Informe de la etapa previa. Las mediciones actuales de nacimiento progresivo,
+> definición y rendimiento están en [ATMOSPHERE-PLUMES.md](ATMOSPHERE-PLUMES.md)
+> y su visor. Los archivos del banco GPU se regeneran con la implementación actual.
 
-## Evidencia reproducible
+Pasaron 27 pruebas unitarias, TypeScript de aplicación/Electron y banco,
+build, banco GPU, banco temporal A–F, smoke de Electron y ejecutable empaquetado.
+Se regeneraron portable y NSIS x64 1.0.0.
 
-El informe completo está en [result.json](../artifacts/atmosphere-volume/result.json).
-La [hoja comparativa local](../artifacts/atmosphere-volume/comparison.html) reúne
-estímulo, control y diferencias ×4. Cada caso comienza desde las mismas semillas,
-con cuatro segundos de ambiente y paso fijo de 1/60 s. El control avanza hasta
-el mismo instante. El replay de audio suave reproduce exactamente las métricas
-de densidad y de imagen; dos simulaciones en silencio dan diferencia cero.
+## Evidencia temporal
 
-Las señales son PCM sintético con espectro discreto correspondiente: graves
-117,19 Hz, medios 1007,81 Hz y agudos 8003,91 Hz. Pasan por FeatureExtractor,
-MaterialResponse (eventos) y el adaptador específico AtmosphereAcoustics.
-No se reemplaza la captura ni se identifican fuentes. Estas pruebas no
-constituyen una evaluación audiovisual con música, voz o películas reales.
+El [visor audiovisual](../artifacts/atmosphere-temporal/comparison.html) incluye
+WAV exactos, secuencias con tiempos, curvas, cuadros por evento y diferencias
+×4. Hay [datos por cuadro](../artifacts/atmosphere-temporal/result.json) y CSV
+por escenario.
 
-## Resultado del banco GPU
+PCM causal a 48 kHz, ventanas FFT Blackman consecutivas de 4096 muestras a
+60 Hz, extractor real, GPU e historial de producción, render interno 640×360
+y 64 pasos. Antes de **cada evento** se copia el estado del gas y su historial
+a un control que recibe las mismas fuerzas sostenidas, omitiendo sólo los
+nuevos impulsos. El gas principal continúa entre golpes.
 
-Los siguientes valores se comparan contra silencio con idéntico estado inicial.
-RMS de imagen usa RGB normalizado 0..1. Píxeles cambiados significa al menos un
-canal con diferencia >4/255, para excluir dither y redondeo insignificante.
-Las capturas de comparación desactivan historial y fijan el mismo muestreo.
+La primera respuesta debe superar simultáneamente RMS RGB 0,001, 0,1 % de
+píxeles con cambio mayor que 4/255 y MAE local 0,002. Resolución temporal:
+16,7 ms. Son umbrales de medición de imagen, no una certificación perceptual.
 
-| Caso | Tiempo de estímulo | RMS imagen | Píxeles cambiados | RMS Δ densidad | Fuerza acústica/ambiental RMS |
-|---|---:|---:|---:|---:|---:|
-| Silencio | 5 s | 0 | 0 % | 0 | 0 |
-| Suave, RMS PCM 0,00886 | 5 s | 0,1039 | 78,2 % | 0,1219 | 0,67 |
-| Graves sostenidos | 5 s | 0,1320 | 88,3 % | 0,1622 | 1,09 |
-| Medios sostenidos | 5 s | 0,0790 | 35,0 % | 0,1176 | 0,81 |
-| Agudos sostenidos | 5 s | 0,0681 | 18,2 % | 0,0760 | 0,65 |
-| Golpe de 100 ms, observado a 350 ms | 0,1 s + retirada | 0,00413 | 1,54 % | 0,00359 | 1,02 |
-| Estela del golpe, observada a 1,5 s | 0,1 s + retirada | 0,0271 | 10,7 % | 0,0279 | 0,10 |
-| Audio dinámico | 5 s | 0,1418 | 89,4 % | 0,1798 | 1,60 |
+| Prueba | Primera respuesta por evento | Resultado |
+|---|---|---|
+| A: golpes aislados | 17 / 17 / 17 / 17 ms | Cuatro impulsos, uno por golpe; sin excitaciones entre ellos. |
+| B: grave constante con golpes | 17 / 17 / 17 / 17 ms | Corriente sostenida más ataques; cada golpe activa dos regiones espectrales. |
+| C: grave, medio, agudo, medio | 17 / 17 / 17 / 17 ms | Escalas y regiones distintas. |
+| D: señal armónica modulada con consonantes de ruido | 50 / 50 / 50 / 50 ms | Cuatro variaciones con excitaciones multibanda. |
+| E: sonido/silencio alternados | 17 / 17 / 17 ms | Nuevas excitaciones en el sonido, con estela posterior. |
+| F: normal (1,2 / 0,8) y máximo (3 / 1,5) | 17 ms en ambos ajustes | Más expresión, sin retraso ni saturación permanente. |
 
-El transitorio produce aceleración desde el primer paso. A 100 ms el cambio de
-imagen sigue siendo pequeño (RMS 0,00049); no se afirma visibilidad inmediata
-de todos los golpes. La prueba exige desplazamiento renderizado medible a
-350 ms y evolución posterior. La oclusión depende de dónde ocurre cada evento.
+Los tiempos abarcan comienzo PCM→imagen; en estos casos la respuesta medible
+coincide con el cuadro de aplicación. D crece gradualmente y se detecta más
+tarde. **No incluyen loopback Windows, compositor ni pantalla física.**
 
-Los controles automáticos exigen además:
+El 100 % de los eventos previstos recibió respuesta en ≤150 ms. Todos los
+cuadros con impulsos nuevos quedaron en intervalos de ataque definidos; en B
+se excluye el arranque inicial del grave de los cuatro golpes superpuestos.
+Correlación binaria máxima entre comienzos PCM y cuadros con impulso: 1,0 a
+17 ms en A/C/E/F y 50 ms en D; 0,703 a 17 ms en B por activaciones regionales
+en cuadros contiguos. No son estadísticas sobre música o voz reales.
 
-- Señales sostenidas: RMS de imagen >0,008, más de 10 % de píxeles cambiados,
-  RMS Δ densidad >0,003 y RMS Δ pigmento >0,001.
-- Campo de agudos con gradiente relativo más de 1,5 veces el de graves y una
-  región de influencia menor. Son mediciones espaciales, no nombres de instrumentos.
-- Presión del golpe localizada y movimiento persistente después de terminar.
-- Al retirar audio dinámico durante un segundo, Δ velocidad RMS todavía 0,01957;
-  después de otros quince segundos baja a 0,000571. La fuerza acústica cae a
-  aproximadamente 0,00138 de la ambiental; las deformaciones de materia persisten.
-- Azul, teal y pigmento cálido presentes en el render; campo de tinte con varianza,
-  valores acotados y transporte distinto del control. La reserva evita que las
-  mezclas se homogeneicen permanentemente.
-- Densidad y velocidad en los tres tercios de profundidad, capturados por separado
-  desde el mismo campo 3D. Se conservan resize y cambio de calidad sin reinicio.
-- Composición Liquid/Texture frente al shader heredado: **diferencia máxima cero
-  bytes**, con entradas y texturas idénticas.
+RMS de imagen a 300 ms en A: 0,01613 / 0,00565 / 0,00885 / 0,01075. Cada golpe
+deja estela. Picos RMS en F máximo: aproximadamente 1,40 / 1,60 / 1,42 / 1,69
+veces los normales. Ningún estado final A–F tuvo celdas próximas al limitador.
 
-La ruta con acumulación temporal de producción se prueba por separado durante
-tres segundos. El percentil 95 del cambio RMS entre cuadros fue **0,00304**,
-con máximo **0,00311**. La diferencia frente a silencio sigue superando el umbral
-de imagen. Esto acota ruido/variación por frame en ese escenario; no constituye
-una certificación universal de ausencia de ghosting.
+## Campo GPU e inyección única
 
-## Estabilidad y pigmentos
+Lecturas del impulso antes de consumirlo:
 
-Cinco minutos adicionales a paso fijo, alternando minutos con audio dinámico y
-silencio, más calentamiento: **317 s simulados**. No se encontraron NaN/Inf,
-velocidades ni pigmentos fuera de rango. Los casos sostenidos por banda no
-saturaron el limitador. En el escenario dinámico a cinco segundos, alrededor de
-**0,139 %** de las celdas superó 0,084, con límite 0,085. Al final de cada minuto
-acelerado no había celdas en ese margen.
+| Evento C | Δ velocidad RMS | Fracción activa | Gradiente relativo |
+|---|---:|---:|---:|
+| Grave | 0,00769 | 35,14 % | 0,0674 |
+| Medio | 0,00228 | 4,29 % | 0,1409 |
+| Agudo | 0,00108 | 0,47 % | 0,3825 |
 
-La densidad mantuvo cuerpos y varianza. Al finalizar, el render conservó unos
-**59,4 %** de píxeles clasificados como azules, **6,27 %** teal y **0,60 %** cálidos
-según los umbrales RGB explícitos del banco. Son indicadores aproximados de
-presencia cromática, no segmentación física ni apreciaciones artísticas.
-La [captura final](../artifacts/atmosphere-volume/stability-final.png) permite
-inspeccionar la evolución. Los colores y su distribución cambian durante la sesión.
+Activa significa módulo de Δ velocidad >0,001. El golpe grave también puede
+activar bandas vecinas debido a la resolución de la ventana corta. El campo
+agudo tiene gradiente unas 5,7 veces mayor que el grave, con región menor.
 
-Memoria estable después de liberar el control: **13 texturas y 2 geometrías**.
-Tras dispose: **cero texturas y cero geometrías**. El pigmento y su reserva añaden
-10,125 MiB de campos frente a la versión anterior. Las lecturas completas sólo
-existen en este banco; el renderizado normal no hace readback.
+La prueba GPU de cola conserva un impulso pendiente tras 1/120 s; el siguiente
+cuadro completa el paso y lo aplica una vez. Tres subpasos adicionales mantienen
+el total aplicado en uno. Las pruebas unitarias cubren ticks omitidos por render,
+fuentes nuevas, eventos antiguos, sensibilidad y FFT causal a 30/60/144 Hz.
 
-## Rendimiento medido
+## Estabilidad, estética y rendimiento
 
-GPU identificada por WebGL: **NVIDIA GeForce GTX 1080 Ti**, ANGLE Direct3D11,
-Windows. Un volumen, salida **1920×1080**, calidad equilibrada, integración
-**1320×742 y 64 pasos**; la salida usa ampliación.
+El [banco GPU completo](../artifacts/atmosphere-volume/result.json) y su
+[comparación visual](../artifacts/atmosphere-volume/comparison.html) comprueban
+transporte, pigmento, silencio, profundidad, resize, repetibilidad y recursos.
+Sus comparaciones tras segundos respaldan esos aspectos; la sincronización
+se valida mediante el banco temporal independiente.
 
-- Medición de ocho segundos con audio dinámico: **59,95 FPS**.
-- Consultas GPU no bloqueantes, 479 muestras: **8,70 ms de mediana** y
-  **9,81 ms en percentil 95**, incluyendo simulación, volumen y composición del banco.
-- El prototipo con 48 pasos y 720.000 píxeles rondó 4,8 ms de mediana. Ese margen
-  permitió subir calidad; se informa el costo final, no el del prototipo.
+Cinco minutos adicionales alternando audio/silencio, 317 s simulados con
+calentamiento: sin NaN/Inf ni campos fuera de rango. Máximos en los finales
+de minuto entre 0,03236 y 0,06506, límite 0,085, fracción saturada cero.
+Se conservaron cuerpos, varianza y pigmentos azul, turquesa y cálido.
 
-El contador está limitado a 60 FPS. No se probaron 144 FPS ni se garantizan mínimos
-bajo toda carga concurrente. El banco no incluye React ni toda la interfaz; la
-aplicación empaquetada se comprueba por separado. La estabilidad acelerada no
-reemplaza una sesión real de varias horas.
+Tras retirar audio dinámico, Δ velocidad RMS fue 0,01906 al segundo y
+0,000563 después de otros quince segundos. La excitación termina y la inercia
+decae; la materia desplazada no tiene que volver a su estado anterior.
 
-## Alcance y artefactos
+Liquid/Texture frente al shader heredado: diferencia máxima **cero bytes**.
+Se conserva el render volumétrico, iluminación, detalle y reservas de pigmento.
+Memoria estable: 13 texturas y 2 geometrías en el banco de un volumen; tras
+dispose, cero texturas y geometrías. No hay nuevos targets ni readbacks en
+producción.
 
-[scope-check.json](../artifacts/atmosphere-volume/scope-check.json) compara hashes
-normalizados contra HEAD: shaders heredados, response.ts, volumeDetail.ts,
-features.ts, capture.ts, App, settings, CSS y todos los archivos Electron sin
-cambios. Universe sólo integra Atmosphere, su diagnóstico y la pausa del campo
-Liquid cuando queda completamente oculto. Se mantienen buffers y transiciones.
+GTX 1080 Ti, ANGLE Direct3D11 en Windows, salida 1920×1080, calidad equilibrada,
+integración 1320×742 y 64 pasos: **59,95 FPS**, mediana GPU **7,94 ms**, p95
+**9,41 ms** (479 consultas en ocho segundos). Cambio entre cuadros con
+historial: p95 RMS 0,00302. No garantiza mínimos bajo otras cargas o hardware.
 
-El banco original también se ejecutó antes de modificar la implementación. Su
-informe y capturas permanecen en artifacts/atmosphere-before/. Ese banco usaba
-una cronología distinta; no se presentan sus capturas como pares idénticos al
-banco nuevo. El shader de fuerzas anterior se conserva como fixture de prueba
-para medir aceleraciones sobre el mismo estado y los uniforms originales.
+## Integración y entregables
 
-La simulación continúa siendo una aproximación con advección, reposición y
-fuerzas: no incorpora proyección de presión ni conservación exacta de masa.
-Se inspeccionaron capturas sintéticas y sus controles; la aceptación perceptual
-con el audio cotidiano del usuario permanece como comprobación manual.
+La [prueba Electron](../artifacts/smoke-result.json) pasó F3, demo, estilos,
+preferencias, tamaños, pantalla completa, render y ciclo de loopback. Windows
+entregó audio real durante el recorrido; eso comprueba adquisición e integración,
+sin medir latencia física ni evaluar perceptualmente contenido identificado.
 
-## Integración de la aplicación
-
-La [prueba general Electron](../artifacts/smoke-result.json) pasó los tres estilos,
-demo identificada, F3, pantalla completa, tamaño mínimo, preferencias y captura.
-Atmosphere registró 60 FPS en ese recorrido. Se observó señal loopback real:
-un registro dio RMS 0,351, ganancia Atmosphere 1,000 y excitaciones por banda
-0,750 / 0,896 / 0,866 / 0,845 / 0,929 / 0,856 / 0,882, con doce eventos recientes.
-Estas son entradas reales del adaptador enlazado a uniforms, sin identificar
-el contenido. El estilo seleccionado en esa captura era Texture: valida la
-adquisición y la alimentación acústica, **no una evaluación perceptual de
-Atmosphere con ese audio**. La captura se detuvo correctamente después.
-
-La [prueba del ejecutable empaquetado](../artifacts/package-result.json) verifica
-preload, carga desde ASAR, F3 con slider enfocado e inicialización volumétrica.
-También exige que Liquid esté pausado bajo Atmosphere y vuelva a estar activo
-al iniciar la transición a Liquid. No se ejecutó una instalación en máquina limpia.
+La [prueba del paquete](../artifacts/package-result.json) pasó ASAR, preload,
+F3 con slider enfocado, volumen, pausa de Liquid bajo Atmosphere y reanudación
+al cambiar. No se probó instalación en máquina limpia.
 
 - [Portable](../release/AudioFlow-1.0.0-Portable.exe).
 - [Instalador](../release/AudioFlow-1.0.0-Setup.exe).
-- [Captura de la aplicación empaquetada](../artifacts/packaged-atmosphere.png).
+- [Hashes SHA-256](../release/SHA256SUMS.txt).
+- [Captura del paquete](../artifacts/packaged-atmosphere.png).
+
+Persisten los límites de la FFT, refractario por banda, oclusión y simulación
+artística sin solver de presión ni conservación exacta de masa. La aceptación
+perceptual con audio cotidiano del usuario sigue siendo una comprobación manual.

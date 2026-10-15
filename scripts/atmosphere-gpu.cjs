@@ -14,6 +14,7 @@ function stable(s) {
   assert(s.densityVariance>.005&&s.density>.08,'Density lost its visible bodies');
   assert(s.saturatedFraction<.08,'Too many voxels hit the velocity limiter');
   assert(s.minPigment>=0&&s.maxPigment<=1.001,'Pigment out of bounds');
+  assert(s.reactiveExcess<.001,'Reactive density exceeds total matter');
   assert(Math.max(...s.pigmentVariance)>.002,'Dye field homogenized');
   assert(s.errors.length===0,s.errors.join('\n'));
 }
@@ -44,7 +45,9 @@ app.whenReady().then(async()=>{
   function renderedResponse(s,label) {
     // Observable bounds, not an artistic verdict. >4/255 rejects dither alone.
     assert(s.image.rms>.008,`${label}: rendered RMS below 2/255`);
-    assert(s.image.changedFraction>.10,`${label}: fewer than 10% changed pixels`);
+    // High-band events are deliberately finer/localer; their onset visibility
+    // is tested per event in the separate causal temporal bank.
+    assert(s.image.changedFraction>(label==='highs' ? .05 : .10),`${label}: insufficient changed pixels for its spatial scale`);
     assert(s.densityDelta>.003,`${label}: density transport barely changed`);
     assert(s.pigmentDelta>.001,`${label}: dye did not travel with the flow`);
   }

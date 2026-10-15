@@ -12,6 +12,7 @@ export interface BandFeatures {
   active: boolean;
 }
 export interface AudioFeatures {
+  time: number; events: AcousticEvent[];
   rms: number; instantaneous: number; peak: number; crest: number;
   bass: number; mids: number; treble: number;
   centroid: number; centroidHz: number; flux: number; rolloffHz: number;
@@ -22,8 +23,12 @@ export interface AudioFeatures {
   stereo: boolean; balance: number; width: number; correlation: number;
   bands: BandFeatures[];
 }
+/** Bounded acquisition log: rendering may skip analysis ticks. Strength is an
+ * unsmoothed observation, independent of the legacy sensitivity gain. */
+export interface AcousticEvent { id: number; time: number; band: number; strength: number; rms: number; spectralShare?: number; }
+export const ACOUSTIC_EVENT_HISTORY = 64;
 export function emptyFeatures(sampleRate = 48000): AudioFeatures {
-  return { rms: 0, instantaneous: 0, peak: 0, crest: 0, bass: 0, mids: 0, treble: 0,
+  return { time: 0, events: [], rms: 0, instantaneous: 0, peak: 0, crest: 0, bass: 0, mids: 0, treble: 0,
     centroid: 0, centroidHz: 0, flux: 0, rolloffHz: 0, flatness: 0, tonality: 0, textureChange: 0,
     shortEnergy: 0, longEnergy: 0, relative: 0, energy: 0, atmosphere: 0, sustained: 0,
     impulse: 0, salience: 0, eventId: 0, signal: false, stereo: false, balance: 0, width: 0, correlation: 0,
@@ -39,7 +44,8 @@ export const envelope = (current: number, target: number, dt: number, attack: nu
   damp(current, target, dt, target > current ? attack : release);
 const finite = (v: number) => Number.isFinite(v) ? v : 0;
 
-/** Pure, allocation-free streaming analysis. dt is elapsed seconds, FFT input dBFS.
+/** Streaming analysis with reused spectral buffers and a bounded event log.
+ * Event records allocate only on detected attacks. dt is seconds, FFT input dBFS.
  * Optional L/R time buffers must belong to the same acquisition window. Stereo is
  * an energy/correlation cue, not source separation. See docs/ACOUSTICS.md for units.
  */
@@ -80,6 +86,7 @@ export class FeatureExtractor {
     sensitivity = clamp(finite(sensitivity), .3, 3);
     softness = clamp(finite(softness));
     const f = this.value;
+    f.time += dt;
     let square = 0, peak = 0, l2 = 0, r2 = 0, cross = 0, side = 0;
     let channelPeak = 0;
     const stereoLength = left && right ? Math.min(left.length, right.length) : 0;
@@ -161,6 +168,10 @@ export class FeatureExtractor {
         ((bandFlux > Math.max(.16,this.fluxMean*1.8) && change > .06) || change > .5)) {
         b.transient = clamp(Math.max(bandFlux,change)*Math.sqrt(sensitivity)*confidenceBand);
         b.eventId++; f.eventId++;
+        f.events.push({id: f.eventId, time: f.time, band: i,
+          strength: clamp(Math.max(bandFlux,change)*confidenceBand), rms: f.rms,
+          spectralShare: powerSum>1e-12 ? b.energy/powerSum : 0});
+        if (f.events.length > ACOUSTIC_EVENT_HISTORY) f.events.shift();
         maxEvent = Math.max(maxEvent,b.transient);
         this.cooldown[i] = .14;
       }

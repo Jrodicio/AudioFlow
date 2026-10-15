@@ -2,14 +2,16 @@
 import type { Quality } from '../settings';
 import { transportShader, volumeRenderShader, volumeVertex, pigmentSourceShader } from './atmosphereShaders';
 import { makeVolumeDetailData } from './volumeDetail';
+import type { AtmosphereAcoustics } from './atmosphereAcoustics';
+import { AtmospherePlumes } from './atmospherePlumes';
 
 export const GAS_GRID = { x: 96, y: 72, z: 48, columns: 8, rows: 6 } as const;
 export const GAS_STEP = 1/60;
 export const GAS_MAX_SPEED = .085;
 export const atmosphereQuality = {
-  eco: { pixels: 320_000, steps: 32 },
-  balanced: { pixels: 980_000, steps: 64 },
-  high: { pixels: 1_400_000, steps: 80 },
+  eco: { pixels: 320_000, steps: 36 },
+  balanced: { pixels: 1_150_000, steps: 72 },
+  high: { pixels: 1_650_000, steps: 88 },
 } as const;
 
 export function volumeImageSize(width: number, height: number, quality: Quality, adaptive = 1) {
@@ -39,7 +41,8 @@ if(uVolumeEnabled>.5 && uStyle.x>.001) {
 type Uniforms = Record<string,THREE.IUniform>;
 
 /** A 3D gas, not a stack of animated images. MRT atlas fields retain XYZ
- * velocity, humidity reservoir, density, material coordinates and RGB dye. Fixed-step
+ * velocity, reactive density, total density, material coordinates and RGB dye.
+ * Initial humidity is cached separately. Fixed-step
  * limited MacCormack transport is followed by ambient/acoustic body forces.
  * All readbacks are confined to the separate GPU validation harness. */
 export class AtmosphereVolume {
@@ -71,15 +74,16 @@ export class AtmosphereVolume {
   private timingFrames = 0;
   private goodSeconds = 0;
   private disposed = false;
+  private plumes = new AtmospherePlumes();
 
-  constructor(private renderer: THREE.WebGLRenderer,private acoustic: Uniforms) {
+  constructor(private renderer: THREE.WebGLRenderer,private acoustic: Uniforms,private events?: AtmosphereAcoustics) {
     this.supported = renderer.extensions.has('EXT_color_buffer_float');
   }
   get texture() { return this.image?.texture ?? null; }
   get seconds() { return this.simulationTime; }
   get debug() {
     if(!this.supported) return 'Atmosphere: volumen FP16 no disponible; material anterior';
-    return `Atmosphere: gas 96×72×48 · transporte 60 Hz · ${atmosphereQuality[this.quality].steps} pasos · ${this.image?.width ?? 0}×${this.image?.height ?? 0} · ${this.simulationTime.toFixed(1)} s`;
+    return `Atmosphere: gas 96×72×48 · transporte 60 Hz · ${atmosphereQuality[this.quality].steps} pasos · ${this.image?.width ?? 0}×${this.image?.height ?? 0} · ${this.simulationTime.toFixed(1)} s\nPlumas: ${this.plumes.born} nacidas · ${this.plumes.active} emisoras · ${this.plumes.replaced} reemplazadas`;
   }
 
   configure(width: number,height: number,quality: Quality) {
@@ -121,6 +125,7 @@ export class AtmosphereVolume {
       depthBuffer:false,stencilBuffer:false,generateMipmaps:false,
     }));
     this.pigmentSource=new THREE.WebGLRenderTarget(GAS_GRID.x*GAS_GRID.columns,GAS_GRID.y*GAS_GRID.rows,{
+      count:2,
       type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
       depthBuffer:false,stencilBuffer:false,generateMipmaps:false,
     });
@@ -143,9 +148,10 @@ export class AtmosphereVolume {
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{
         uGrid:grid,uTiles:tiles,uPass:{value:0},uDt:{value:GAS_STEP},uSimulationTime:{value:0},uIntensity:{value:0},
         uAcousticGain:this.acoustic.uAcousticGain ?? {value:1},uDiagnostic:{value:0},
+        uPlumes:{value:this.plumes.sources},uPlumePhases:{value:this.plumes.phases},
         uVelocity:{value:this.states[1].textures[0]},uMatter:{value:this.states[1].textures[1]},
         uPigment:{value:this.states[1].textures[2]},uTransportPigment:{value:this.states[2].textures[2]},
-        uPigmentSource:{value:this.pigmentSource.texture},
+        uPigmentSource:{value:this.pigmentSource.textures[0]},uHumiditySource:{value:this.pigmentSource.textures[1]},
         uTransportVelocity:{value:this.states[2].textures[0]},uTransportMatter:{value:this.states[2].textures[1]},
         uBands:this.acoustic.uBands,uSustained:this.acoustic.uSustained,uSalience:this.acoustic.uSalience,
         uEvents:this.acoustic.uEvents,uEventBands:this.acoustic.uEventBands,uContext:this.acoustic.uContext,
@@ -165,7 +171,7 @@ export class AtmosphereVolume {
   }
 
   advance(dt: number,intensity: number) {
-    if(!this.supported || this.disposed) return;
+    if(!this.supported || this.disposed) { this.events?.discardImpulses(); return; }
     this.allocate();
     const renderer=this.renderer,uniforms=this.transport!.uniforms;
     const previousTarget=renderer.getRenderTarget();
@@ -185,6 +191,11 @@ export class AtmosphereVolume {
       this.accumulator=Math.min(4*GAS_STEP,this.accumulator+Math.max(0,Math.min(.1,dt)));
       uniforms.uIntensity.value=Math.max(0,Math.min(1.5,intensity));
       while(this.accumulator+1e-8>=GAS_STEP) {
+        if(this.events) {
+          if(intensity>0) this.plumes.begin(this.events);
+          this.events.consumeImpulses();
+        }
+        this.plumes.step(GAS_STEP);
         const previous=this.states[this.index],next=this.states[1-this.index],scratch=this.states[2];
         uniforms.uVelocity.value=previous.textures[0]; uniforms.uMatter.value=previous.textures[1];
         uniforms.uPigment.value=previous.textures[2]; uniforms.uTransportPigment.value=previous.textures[2];
@@ -195,6 +206,8 @@ export class AtmosphereVolume {
         uniforms.uTransportPigment.value=scratch.textures[2];
         uniforms.uPass.value=2; uniforms.uSimulationTime.value=this.simulationTime;
         renderer.setRenderTarget(next); renderer.render(this.transportScene,this.camera);
+        // Each event starts one emitter. Subsequent steps spend only the next
+        // integral slice of its finite budget, including catch-up substeps.
         this.index=1-this.index; this.accumulator=Math.max(0,this.accumulator-GAS_STEP);
         this.simulationTime+=GAS_STEP;
       }
@@ -211,11 +224,11 @@ export class AtmosphereVolume {
       this.shading.uniforms.uHistory.value=this.historyImage.texture;
       const frameAge=Math.max(1/120,this.simulationTime-this.lastDrawTime);
       // Reduce latency during excitation without modulating density or light.
-      // Even in silence 45 ms suffices to integrate the interleaved ray samples.
+      // Keep sample integration while retaining finer material trajectories.
       let excitation=0;
       for(let i=0;i<7;i++)excitation=Math.max(excitation,this.acoustic.uSalience.value[i],this.acoustic.uBands.value[i]);
-      excitation=Math.min(1,excitation);
-      const historySeconds=.045-.020*excitation;
+      excitation=Math.min(1,Math.max(excitation,this.events?.rapid ?? 0));
+      const historySeconds=.034-.012*excitation;
       this.shading.uniforms.uHistoryWeight.value=this.historyReady && useHistory ? Math.exp(-frameAge/historySeconds) : 0;
       this.shading.uniforms.uFrame.value=this.renderFrame++;
       this.renderer.setRenderTarget(this.image); this.renderer.render(this.imageScene,this.camera);
@@ -226,6 +239,8 @@ export class AtmosphereVolume {
 
   /** Used only after actual context loss, never for audio or ordinary resize. */
   restore() {
+    this.plumes.clear();
+    this.events?.discardImpulses();
     this.initialized=false; this.accumulator=0; this.historyReady=false;
     this.simulationTime=0; this.lastDrawTime=0; this.renderFrame=0;
   }
@@ -240,4 +255,6 @@ export class AtmosphereVolume {
     this.pigmentSource?.dispose();this.pigmentSource=null;this.seedPigment?.dispose();this.seedPigment=null;
     this.transportScene.clear(); this.imageScene.clear();
   }
+
+  stopEmission() { this.plumes.clear(); this.events?.discardImpulses(); }
 }
