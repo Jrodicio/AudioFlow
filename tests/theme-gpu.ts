@@ -6,6 +6,7 @@ import { fragmentShader, vertexShader } from '../src/visual/shaders';
 import { ThemeGPU, withThemeSurface } from '../src/themes/gpu';
 import { COLD_AND_FIRE } from '../src/themes';
 import { duplicateTheme, withColors } from '../src/themes/library';
+import { withFormationDensity, withFormationTransport, withFormationRender } from '../src/visual/atmosphereMorphology';
 
 const renderer = new THREE.WebGLRenderer({ canvas: document.querySelector('canvas')!, antialias: false, powerPreference: 'high-performance' });
 renderer.setSize(960, 540, false);
@@ -70,10 +71,12 @@ function setup(approved: { transportShader: string; volumeRenderShader: string; 
   volume.advance(0, .8); reference.advance(0, .8);
   baseline.states.forEach(target=>target.dispose());
   baseline.states=[0,1,2].map(()=>new THREE.WebGLRenderTarget(GAS_GRID.x*GAS_GRID.columns,GAS_GRID.y*GAS_GRID.rows,{count:3,type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,depthBuffer:false,stencilBuffer:false,generateMipmaps:false}));
-  baseline.transport.fragmentShader = approved.transportShader; baseline.transport.needsUpdate = true;
-  baseline.shading.fragmentShader = approved.volumeRenderShader; baseline.shading.needsUpdate = true;
+  // Isolate chromatic compatibility on the same new morphology. The separate
+  // morphology bank compares actual old/new formation shapes and occupancy.
+  baseline.transport.fragmentShader = withFormationTransport(approved.transportShader); baseline.transport.needsUpdate = true;
+  baseline.shading.fragmentShader = withFormationRender(approved.volumeRenderShader); baseline.shading.needsUpdate = true;
   const seed = (reference as unknown as { seedPigment: THREE.ShaderMaterial }).seedPigment;
-  seed.fragmentShader = approved.pigmentSourceShader; seed.needsUpdate = true; reference.restore();
+  seed.fragmentShader = withFormationDensity(approved.pigmentSourceShader); seed.needsUpdate = true; reference.restore();
   reference.advance(0,.8);
   const seedDifference=[0,1,2].map(i=>difference(field(volume,i),field(reference,i)));
   for (let i = 0; i < 90; i++) { volume.advance(1 / 60, .8); reference.advance(1 / 60, .8); }

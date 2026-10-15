@@ -6,6 +6,7 @@ import { transportShader, volumeRenderShader, volumeVertex, pigmentSourceShader 
 import { makeVolumeDetailData } from './volumeDetail';
 import type { AtmosphereAcoustics } from './atmosphereAcoustics';
 import { AtmospherePlumes } from './atmospherePlumes';
+import { withFormationDensity, withFormationTransport, withFormationRender } from './atmosphereMorphology';
 
 export const GAS_GRID = { x: 96, y: 72, z: 48, columns: 8, rows: 6 } as const;
 export const GAS_STEP = 1/60;
@@ -134,7 +135,7 @@ export class AtmosphereVolume {
       type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
       depthBuffer:false,stencilBuffer:false,generateMipmaps:false,
     });
-    this.seedPigment=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:withThemeSource(pigmentSourceShader),
+    this.seedPigment=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:withThemeSource(withFormationDensity(pigmentSourceShader)),
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{uGrid:grid,uTiles:tiles}});
     const size=volumeImageSize(this.width,this.height,this.quality,this.adaptive);
     this.image=new THREE.WebGLRenderTarget(size.width,size.height,{
@@ -149,7 +150,7 @@ export class AtmosphereVolume {
     this.detail.wrapS=this.detail.wrapT=this.detail.wrapR=THREE.RepeatWrapping;
     this.detail.minFilter=THREE.LinearMipmapLinearFilter; this.detail.magFilter=THREE.LinearFilter;
     this.detail.generateMipmaps=true; this.detail.needsUpdate=true;
-    this.transport=new THREE.ShaderMaterial({ vertexShader:volumeVertex,fragmentShader:withThemeTransport(transportShader),
+    this.transport=new THREE.ShaderMaterial({ vertexShader:volumeVertex,fragmentShader:withFormationTransport(withThemeTransport(transportShader)),
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{
         uChromatic:{value:this.states[1].textures[3]},uTransportChromatic:{value:this.states[2].textures[3]},
         uGrid:grid,uTiles:tiles,uPass:{value:0},uDt:{value:GAS_STEP},uSimulationTime:{value:0},uIntensity:{value:0},
@@ -162,7 +163,7 @@ export class AtmosphereVolume {
         uBands:this.acoustic.uBands,uSustained:this.acoustic.uSustained,uSalience:this.acoustic.uSalience,
         uEvents:this.acoustic.uEvents,uEventBands:this.acoustic.uEventBands,uContext:this.acoustic.uContext,
       } });
-    this.shading=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:withThemeVolume(volumeRenderShader),
+    this.shading=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:withThemeVolume(withFormationRender(volumeRenderShader)),
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{
         ...this.theme.uniforms,uChromatic:{value:this.states[0].textures[3]},
         uGrid:grid,uTiles:tiles,uMatter:{value:this.states[0].textures[1]},

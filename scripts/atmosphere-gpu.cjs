@@ -11,7 +11,10 @@ function stable(s) {
   assert(s.invalid===0,'Non-finite voxels');
   assert(Number.isFinite(s.maxSpeed)&&s.maxSpeed<=.0852,'Velocity bound failed');
   assert(s.minDensity>=0&&s.maxDensity<=1.001,'Density bounds failed');
-  assert(s.densityVariance>.005&&s.density>.08,'Density lost its visible bodies');
+  // Prompt 8 deliberately lowers mean fill. Require retained dense bodies and
+  // contrast instead of the former >.08 mean, which rejected the intended void.
+  // The morphology bank separately enforces projected separation and wisps.
+  assert(s.densityVariance>.001&&s.density>.008&&s.maxDensity>.2&&s.occupiedFraction>.02,'Density lost its sparse visible bodies');
   assert(s.saturatedFraction<.08,'Too many voxels hit the velocity limiter');
   assert(s.minPigment>=0&&s.maxPigment<=1.001,'Pigment out of bounds');
   assert(s.reactiveExcess<.001,'Reactive density exceeds total matter');
@@ -74,7 +77,9 @@ app.whenReady().then(async()=>{
     assert(early.image.rms>.001&&early.image.changedFraction>.002,'Transient transport is not visible within 350 ms');
     assert(impulse.forces.after.acoustic.activeFraction<.55,'Transient is not localized');
     assert(wake.velocityDelta>impulse.velocityDelta*.5,'Transient inertia disappeared');
-    assert(wake.image.rms>.002&&wake.densityDelta>impulse.densityDelta,'Impulse did not evolve in rendered matter');
+    // In a sparse scene the birth is already visible in empty space. Its wake
+    // must persist after bloom, rather than grow beyond the first injection.
+    assert(wake.image.rms>.002&&wake.densityDelta>early.densityDelta*.35,'Impulse wake did not persist in rendered matter');
     await fresh();const intense=await paired('F-dynamic','intense',5);renderedResponse(intense,'dynamic');
     const release=await paired('F-release','release',1);
     const decay=await paired('F-decay','release',15);

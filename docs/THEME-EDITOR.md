@@ -1,5 +1,12 @@
 # Temas, pigmentos y editor
 
+> Las mediciones de igualdad directa con el tag y rendimiento de este documento
+> corresponden a Prompt 7. La iteración posterior de
+> [morfología de Atmosphere](ATMOSPHERE-MORPHOLOGY.md) conserva sus colores,
+> bindings y editor, y cambia deliberadamente la forma de la materia. Su banco
+> cromático compara controles con la misma morfología; la comparación de formas
+> se publica por separado.
+
 Implementación del 15 de octubre de 2026. Referencia visual:
 `atmosphere-cold-fire-plumes-v1`.
 

@@ -8,9 +8,9 @@ import { AtmosphereAcoustics } from '../src/visual/atmosphereAcoustics';
 import { transportShader } from '../src/visual/atmosphereShaders';
 import { forcesBefore } from './fixtures/atmosphere-forces-before';
 import { makeSignal, SignalWindow, eventTimes, type TemporalCase } from './fixtures/atmosphere-signals';
-import { volumeVertex } from '../src/visual/atmosphereShaders';
+import { volumeVertex, volumeRenderShader } from '../src/visual/atmosphereShaders';
+import { withThemeVolume } from '../src/themes/gpu';
 import type { AtmospherePlumes } from '../src/visual/atmospherePlumes';
-import { renderBefore } from './fixtures/atmosphere-render-before';
 
 type Mode = 'silence'|'soft'|'bass'|'mids'|'highs'|'transient'|'intense'|'release';
 const renderer=new THREE.WebGLRenderer({canvas:document.querySelector('canvas')!,antialias:false,powerPreference:'high-performance'});
@@ -71,7 +71,7 @@ function stats() {
   const velocity=read(volume,0),matter=read(volume,1);
   const pigment=read(volume,2),referenceMatter=withControl ? read(control,1) : null,referencePigment=withControl ? read(control,2) : null;
   const reference=withControl ? read(control,0) : null;
-  let maxSpeed=0,kinetic=0,delta=0,density=0,density2=0,minDensity=Infinity,maxDensity=0,invalid=0,change=0,densityDelta=0,pigmentDelta=0,saturated=0,reactive=0,reactiveExcess=0;
+  let maxSpeed=0,kinetic=0,delta=0,density=0,density2=0,minDensity=Infinity,maxDensity=0,invalid=0,change=0,densityDelta=0,pigmentDelta=0,saturated=0,reactive=0,reactiveExcess=0,occupied=0;
   const depth=[{speed:0,density:0,count:0},{speed:0,density:0,count:0},{speed:0,density:0,count:0}];
   const currentDensity=new Float32Array(matter.length/4);
   const dyeSum=[0,0,0],dyeSquare=[0,0,0];let minPigment=1,maxPigment=0;
@@ -82,6 +82,7 @@ function stats() {
     for(let c=0;c<4;c++) if((matter[i+c]&0x7c00)===0x7c00||(velocity[i+c]&0x7c00)===0x7c00||(pigment[i+c]&0x7c00)===0x7c00)invalid++;
     if(reference)for(let c=0;c<3;c++)delta+=Math.pow(components[c]-THREE.DataUtils.fromHalfFloat(reference[i+c]),2);
     const d=THREE.DataUtils.fromHalfFloat(matter[i+3]);currentDensity[i/4]=d;
+    if(d>.1)occupied++;
     const r=THREE.DataUtils.fromHalfFloat(velocity[i+3]);reactive+=r;reactiveExcess=Math.max(reactiveExcess,r-d,-r);
     if(referenceMatter)densityDelta+=Math.pow(d-THREE.DataUtils.fromHalfFloat(referenceMatter[i+3]),2);
     if(referencePigment)for(let c=0;c<3;c++)pigmentDelta+=Math.pow(THREE.DataUtils.fromHalfFloat(pigment[i+c])-THREE.DataUtils.fromHalfFloat(referencePigment[i+c]),2);
@@ -99,7 +100,7 @@ function stats() {
   const n=matter.length/4;
   lastDensity=currentDensity;
   return {seconds:volume.seconds,invalid,maxSpeed,rmsSpeed:Math.sqrt(kinetic/n),velocityDelta:Math.sqrt(delta/n),
-    density:density/n,densityVariance:density2/n-Math.pow(density/n,2),minDensity,maxDensity,densityChange:change/n,
+    density:density/n,densityVariance:density2/n-Math.pow(density/n,2),occupiedFraction:occupied/n,minDensity,maxDensity,densityChange:change/n,
     densityDelta:Math.sqrt(densityDelta/n),pigmentDelta:Math.sqrt(pigmentDelta/(n*3)),saturatedFraction:saturated/n,
     pigmentMean:dyeSum.map(v=>v/n),pigmentVariance:dyeSum.map((v,i)=>dyeSquare[i]/n-(v/n)**2),minPigment,maxPigment,
     depth:depth.map(d=>({speed:d.speed/d.count,density:d.density/d.count})),
@@ -423,12 +424,12 @@ function definitionComparison() {
   const make=(fragmentShader:string)=>new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader,
     glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
     uniforms:Object.fromEntries(Object.entries(s.shading.uniforms).map(([key,u])=>[key,{value:u.value}]))});
-  const before=make(renderBefore),after=make(s.shading.fragmentShader);
-  before.uniforms.uSteps.value=64;after.uniforms.uSteps.value=72;
+  const before=make(withThemeVolume(volumeRenderShader)),after=make(s.shading.fragmentShader);
+  before.uniforms.uSteps.value=72;after.uniforms.uSteps.value=72;
   const plane=new THREE.Mesh(geometry,before),sc=new THREE.Scene();sc.add(plane);
   const composed=new THREE.WebGLRenderTarget(1920,1080,{depthBuffer:false});
   const results:Record<string,unknown>={};renderer.setSize(1920,1080,false);
-  for(const [label,material,budget] of [['before',before,980000],['after',after,1150000]] as const) {
+  for(const [label,material,budget] of [['before',before,1150000],['after',after,1150000]] as const) {
     material.uniforms.uFrame.value=0;material.uniforms.uHistoryWeight.value=0;
     material.uniforms.uResolution.value.set(1920,1080);
     const scale=Math.sqrt(budget/(1920*1080));

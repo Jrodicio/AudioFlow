@@ -26,8 +26,9 @@ app.whenReady().then(async () => {
     assert(await run('gpuThemeTest.ready'), 'FP16 volume unavailable');
     report.hardware = await run('gpuThemeTest.hardware');
     report.baseline = await run(`gpuThemeTest.setup(${JSON.stringify(shaders)})`);
-    assert(report.baseline.image.max === 0, 'Official render differs from approved tag');
-    assert(report.baseline.physics.every(d => d.max === 0), 'Baseline transport differs from tag');
+    report.referenceScope='Approved tag color formulas on morphology-matched fields/render; Prompt 8 intentionally changes formation shapes.';
+    assert(report.baseline.image.max === 0, 'Official chromatic binding differs on morphology-matched fields');
+    assert(report.baseline.physics.every(d => d.max === 0), 'Theme binding changes morphology-matched transport');
     await capture('A-official');
     for (const name of ['duplicate', 'red', 'yellow', 'both', 'edited', 'original']) {
       report.scenarios[name] = await run(`gpuThemeTest.setTheme('${name}')`); await capture(name);
@@ -45,9 +46,9 @@ app.whenReady().then(async () => {
     assert(report.transition.largestStep < .04, 'Abrupt transition');
     assert(report.transition.chromatic.nonfinite === 0 && report.transition.chromatic.hi - report.transition.chromatic.lo > .3, 'Chromatic field invalid');
     report.restoredMoving = await run('gpuThemeTest.restoredMoving()');
-    assert(report.restoredMoving.image.max === 0, 'Restoring moving matter differs from tag');
+    assert(report.restoredMoving.image.max === 0, 'Restoring moving matter differs from the morphology-matched chromatic control');
     report.reactive=await run('gpuThemeTest.reactiveBaseline()');
-    assert(report.reactive.every(c=>c.image.max===0&&c.physics.every(d=>d.max===0)),'Reactive plumes differ from approved tag');
+    assert(report.reactive.every(c=>c.image.max===0&&c.physics.every(d=>d.max===0)),'Theme binding changes reactive plumes');
     report.surfaces = await run('gpuThemeTest.surfaceCheck()');
     for (const [name, s] of Object.entries(report.surfaces)) {
       assert(s.official.max === 0, `${name} baseline changed`); assert(s.custom.rms > .005 && s.edited.rms > .002, `${name} does not respond to theme`);

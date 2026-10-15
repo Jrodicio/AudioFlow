@@ -17,6 +17,7 @@
     "test:themes:ui": "node scripts/test-atmosphere.mjs --theme-ui",
     "test:themes:gpu": "node scripts/test-atmosphere.mjs --themes",
     "test:atmosphere": "node scripts/test-atmosphere.mjs",
+    "test:atmosphere:morphology": "node scripts/test-atmosphere.mjs --morphology",
     "test:atmosphere:temporal": "node scripts/test-atmosphere.mjs --temporal",
     "test:atmosphere:plumes": "node scripts/test-atmosphere.mjs --plumes",
     "test:smoke": "npm run build && node scripts/run-electron.mjs scripts/smoke.cjs",
