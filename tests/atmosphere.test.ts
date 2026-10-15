@@ -3,6 +3,25 @@ import assert from 'node:assert/strict';
 import type * as THREE from 'three';
 import { AtmosphereVolume, GAS_GRID, atmosphereQuality, volumeImageSize } from '../src/visual/AtmosphereVolume.ts';
 import { makeVolumeDetailData } from '../src/visual/volumeDetail.ts';
+import { AtmosphereAcoustics } from '../src/visual/atmosphereAcoustics.ts';
+import { emptyFeatures } from '../src/audio/features.ts';
+
+test('Atmosphere responds quickly, retains absolute dynamics and releases without cross-band excitation',()=>{
+  const quiet=new AtmosphereAcoustics(),loud=new AtmosphereAcoustics();
+  const f=emptyFeatures();f.rms=.004;f.bands[3].fast=.7;f.bands[3].salience=.6;f.bands[3].sustained=.4;
+  for(let i=0;i<6;i++)quiet.update(f,1/60);
+  f.rms=.2;
+  for(let i=0;i<6;i++)loud.update(f,1/60);
+  assert.ok(quiet.bands[3]>.68,'Fast observation must reach the volume within 100 ms');
+  assert.ok(loud.gain.value>quiet.gain.value*1.7,'Adaptive normalization must retain absolute dynamics');
+  assert.equal(quiet.salience[3],Math.fround(.6));
+  assert.equal(quiet.sustained[3],Math.fround(.4));
+  assert.equal(quiet.bands[1],0);
+  quiet.update(emptyFeatures(),1/60);
+  assert.ok(quiet.bands[3]>.6,'Excitation must release continuously');
+  for(let i=0;i<180;i++)quiet.update(emptyFeatures(),1/60);
+  assert.ok(quiet.bands[3]<.00001);
+});
 
 test('volumetric atlas covers every depth cell and image budgets preserve aspect',()=>{
   assert.equal(GAS_GRID.columns*GAS_GRID.rows,GAS_GRID.z);

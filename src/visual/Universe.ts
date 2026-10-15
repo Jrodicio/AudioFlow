@@ -5,6 +5,7 @@ import { fragmentShader, fluidShader, vertexShader } from './shaders';
 import { MaterialResponse } from './response';
 import { BAND_NAMES } from '../audio/features';
 import { AtmosphereVolume, withVolumetricAtmosphere } from './AtmosphereVolume';
+import { AtmosphereAcoustics } from './atmosphereAcoustics';
 
 export interface VisualStats { fps: number; scale: number; style: Style; debug?: string; }
 const styles: Style[] = ['atmosphere', 'liquid', 'texture'];
@@ -44,6 +45,7 @@ export class Universe {
   private fluidIndex = 0;
   private fluidReady = false;
   private atmosphere: AtmosphereVolume;
+  private atmosphereAcoustics = new AtmosphereAcoustics();
 
   constructor(private canvas: HTMLCanvasElement,
     private settings: () => Settings,
@@ -96,7 +98,11 @@ export class Universe {
     const fluidMesh = new THREE.Mesh(this.geometry,this.fluidMaterial);
     fluidMesh.frustumCulled = false;
     this.fluidScene.add(fluidMesh);
-    this.atmosphere = new AtmosphereVolume(this.renderer,shared);
+    this.atmosphere = new AtmosphereVolume(this.renderer,{
+      ...shared,uBands:{value:this.atmosphereAcoustics.bands},
+      uSustained:{value:this.atmosphereAcoustics.sustained},uSalience:{value:this.atmosphereAcoustics.salience},
+      uAcousticGain:this.atmosphereAcoustics.gain,
+    });
     shared.uVolumeEnabled.value = this.atmosphere.supported ? 1 : 0;
     const mesh = new THREE.Mesh(this.geometry, this.material);
     mesh.frustumCulled = false;
@@ -165,6 +171,7 @@ export class Universe {
     this.elapsed += dt;
     const real = this.sample(dt);
     const observed = this.response.update(real,dt,this.isDemo(),s.softness);
+    this.atmosphereAcoustics.update(observed,dt,this.isDemo());
     const f = this.blended;
     f.energy = damp(f.energy,observed.energy,dt,.15);
     f.bass = damp(f.bass,observed.bass,dt,.12);
@@ -190,8 +197,11 @@ export class Universe {
     this.fluidMaterial.uniforms.uIntensity.value = s.intensity;
     const steps = Math.ceil(dt/(1/30));
     this.fluidMaterial.uniforms.uDt.value = dt/steps;
-    // The liquid field remains alive across style changes and UI operations.
-    for (let step=0;step<steps;step++) {
+    // Freeze both buffers only when the pure volume fully hides Liquid. Keep
+    // their contents, and resume ordinary small steps as soon as a transition
+    // starts; no reset or catch-up of the hidden interval.
+    const liquidVisible=this.currentStyle!=='atmosphere' || this.material.uniforms.uStyle.value.x<=.995 || !this.atmosphere.supported;
+    for (let step=0;liquidVisible && step<steps;step++) {
       const next = 1-this.fluidIndex;
       this.fluidMaterial.uniforms.uPrevious.value = this.fluidTargets[this.fluidIndex].texture;
       this.fluidMaterial.uniforms.uInitialize.value = this.fluidReady ? 0 : 1;
@@ -226,6 +236,7 @@ export class Universe {
         `Estructura ${fmt(this.response.structure)} · brillo ${fmt(this.response.brightness)}`,
         `GPU: líquido ${typeLabel(this.fluidTargets[0].texture.type)} 512² · ${Math.round(this.frameCount/this.frameSeconds)} FPS`,
         this.atmosphere.debug,
+        `Atmosphere: ganancia ${fmt(this.atmosphereAcoustics.gain.value)} · bandas ${Array.from(this.atmosphereAcoustics.bands,fmt).join(' ')} · eventos ${Array.from(this.response.eventBands).filter((_,i)=>this.response.events[i*4+2]<2 && this.response.events[i*4+3]>.005).length} · Liquid ${liquidVisible ? 'activo' : 'pausado'}`,
       ].join('\n');
       this.onStats({ fps: Math.round(this.frameCount/this.frameSeconds), scale: this.scale, style: this.currentStyle, debug });
       this.frameCount=0;

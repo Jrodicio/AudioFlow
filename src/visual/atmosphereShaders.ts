@@ -56,6 +56,21 @@ vec4 initialMatter(vec3 p) {
   // displacement rather than absolute UVW preserves small increments in FP16.
   return vec4(0,0,0,density*envelope);
 }
+// Independent broad dye bodies, seeded once. RGB is subsequently transported,
+// not reconstructed from screen position, density, time or acoustic energy.
+vec4 initialPigment(vec3 p) {
+  vec3 warp=vec3(noise3(p*3.1+4.2),noise3(p*3.1+13.7),noise3(p*3.1+27.1));
+  float body=noise3(p*5.3+warp*2.2+vec3(3,9,2));
+  vec3 dye=mix(vec3(.025,.065,.40),vec3(.045,.24,.82),smoothstep(.24,.48,body));
+  dye=mix(dye,vec3(.015,.67,.62),smoothstep(.46,.64,body));
+  dye=mix(dye,vec3(.30,.86,.92),smoothstep(.65,.82,body));
+  float pale=noise3(p*7.1+warp+31.7);
+  dye=mix(dye,vec3(.82,.91,.94),smoothstep(.63,.84,pale)*.8);
+  float gold=noise3(p*6.2+warp*1.7+73.4);
+  // Store warm dye concentration separately in the spare channel. Direct RGB
+  // averaging of copper and cyan otherwise neutralizes both over long runs.
+  return vec4(dye,smoothstep(.63,.79,gold));
+}
 // Curl of a smooth vector potential; three axes and scales coexist. It supplies
 // forces, not replacement animation coordinates for the density.
 vec3 curlForce(vec3 p,vec3 k,vec3 phase) {
@@ -66,19 +81,33 @@ vec3 curlForce(vec3 p,vec3 k,vec3 phase) {
 }
 `;
 
+export const pigmentSourceShader = /* glsl */ `
+precision highp float;
+out vec4 outSource;
+${volumeCoordinates}
+${noise}
+void main() { outSource=initialPigment(voxelPosition()); }
+`;
+
 export const transportShader = /* glsl */ `
 precision highp float;
 in vec2 vUv;
 layout(location=0) out vec4 outVelocity;
 layout(location=1) out vec4 outMatter;
+layout(location=2) out vec4 outPigment;
 uniform sampler2D uVelocity;
 uniform sampler2D uMatter;
 uniform sampler2D uTransportVelocity;
 uniform sampler2D uTransportMatter;
+uniform sampler2D uPigment;
+uniform sampler2D uTransportPigment;
+uniform sampler2D uPigmentSource;
 uniform int uPass; // 0 seed once; 1 forward transport; 2 limited correction/forces
 uniform float uDt;
 uniform float uSimulationTime;
 uniform float uIntensity;
+uniform float uAcousticGain;
+uniform int uDiagnostic; // Test-only force readback, never enabled in production.
 uniform float uBands[7];
 uniform float uSustained[7];
 uniform float uSalience[7];
@@ -92,6 +121,7 @@ void main() {
   if(uPass==0) {
     vec4 matter=initialMatter(p);
     outVelocity=vec4(curlForce(p,vec3(4,5,3),vec3(1,2,3))*.008,matter.a);
+    outPigment=initialPigment(p);
     outMatter=matter; return;
   }
   vec4 originalVelocity=volumeSample(uVelocity,p);
@@ -101,6 +131,7 @@ void main() {
   if(uPass==1) {
     outVelocity=volumeSample(uVelocity,departure);
     outMatter=volumeSample(uMatter,departure);
+    outPigment=volumeSample(uPigment,departure);
     outMatter.rgb+=departure-p; return;
   }
   vec4 transported=volumeSample(uTransportMatter,p);
@@ -108,51 +139,79 @@ void main() {
   vec4 reversed=volumeSample(uTransportMatter,p+originalVelocity.xyz*uDt);
   reversed.rgb+=originalVelocity.xyz*uDt;
   vec4 corrected=transported+.5*(original-reversed);
+  vec4 dye=volumeSample(uTransportPigment,p)+.5*(volumeSample(uPigment,p)
+    -volumeSample(uTransportPigment,p+originalVelocity.xyz*uDt));
   // Monotonic MacCormack correction: preserve wisps without ringing, negative
   // density, unchecked sharpening or the diffusion of plain repeated bilerp.
   vec4 lo=volumeSample(uMatter,departure);
   lo.rgb+=departure-p;
   vec4 hi=lo;
+  vec4 dyeLo=volumeSample(uPigment,departure),dyeHi=dyeLo;
   for(int axis=0;axis<3;axis++) {
     vec3 offset=vec3(0); offset[axis]=cell[axis];
     vec4 a=volumeSample(uMatter,departure+offset),b=volumeSample(uMatter,departure-offset);
     a.rgb+=departure+offset-p; b.rgb+=departure-offset-p;
     lo=min(lo,min(a,b)); hi=max(hi,max(a,b));
+    vec4 ca=volumeSample(uPigment,departure+offset),cb=volumeSample(uPigment,departure-offset);
+    dyeLo=min(dyeLo,min(ca,cb)); dyeHi=max(dyeHi,max(ca,cb));
   }
   lo.rgb=min(lo.rgb,transported.rgb);
   hi.rgb=max(hi.rgb,transported.rgb);
   corrected=clamp(corrected,lo,hi);
+  dye=clamp(dye,dyeLo,dyeHi);
   vec4 v=volumeSample(uTransportVelocity,p);
   float t=uSimulationTime;
   vec3 force=curlForce(p,vec3(4.1,5.3,3.7),vec3(t*.045,t*-.032,t*.038))*.0055;
   force+=curlForce(p,vec3(11.7,9.1,13.3),vec3(2.3-t*.09,4.7+t*.07,t*.05))*.002;
   force+=curlForce(p,vec3(27.3,24.1,22.7),vec3(t*.15,3.1-t*.12,7.9+t*.13))*.0006;
   force.y+=(corrected.a-.16)*.0014;
+  vec3 ambientForce=force;
+  vec3 acousticForce=vec3(0);
   for(int i=0;i<7;i++) {
     float band=float(i);
-    vec3 center=vec3(.5+.3*sin(band*2.399)+uContext.y*.10,
-      .5+.29*cos(band*1.73),.23+fract(band*.371)*.54);
+    // Slow, incommensurate drift and existing material displacement avoid seven
+    // stationary vortex stamps. The pressure field bends existing currents.
+    vec3 center=vec3(.5+.26*sin(band*2.399+t*.073)+uContext.y*.08,
+      .5+.25*cos(band*1.73-t*.061),.25+fract(band*.371)*.50);
     vec3 d=p-center;
-    float mask=exp(-dot(d,d)*(i<2 ? 9.0 : (i<5 ? 24.0 : 48.0)));
-    float level=(uBands[i]*.25+uSustained[i]*.65+uSalience[i]*.35)*uIntensity;
+    d+=corrected.rgb*.32;
+    float radius=i<2 ? .38 : (i<5 ? .25 : .18);
+    float mask=exp(-dot(d,d)/(radius*radius));
+    float level=(uBands[i]*.60+uSustained[i]*.55+uSalience[i]*.40)*uIntensity*uAcousticGain;
     vec3 axis=normalize(vec3(sin(band*1.7)+.2,1.0,cos(band*2.1)));
     if(i<2) {
-      force+=(cross(axis,d)*.011+d*.004*uSalience[i])*mask*level;
+      // Units: normalized volume lengths/s². Normalize by influence radius;
+      // the former raw cross(axis,d) silently attenuated the gain again.
+      vec3 current=cross(axis,d)/radius;
+      vec3 pressure=axis*.55+curlForce(p+corrected.rgb*.3,vec3(5,4,6),vec3(band,t*.11,2))*.45;
+      acousticForce+=(current*.024+pressure*.028)*mask*level;
     } else if(i<5) {
-      force+=cross(axis,d)*mask*level*.032;
+      vec3 eddy=curlForce(d,vec3(15,19,13),vec3(band,t*.21,-t*.17));
+      acousticForce+=(cross(axis,d)/radius*.045+eddy*.016)*mask*level;
     } else {
-      force+=curlForce(p-center,vec3(42,37,46),vec3(t*.6,band,-t*.5))*mask*level*.005;
+      // Resolve these eddies on the 48-slice grid; don't inject sub-voxel noise.
+      float edge=.35+.65*(1.0-smoothstep(.15,.75,corrected.a));
+      acousticForce+=curlForce(d,vec3(39,33,35),vec3(t*.6,band,-t*.5))*mask*level*.050*edge;
     }
   }
   for(int i=0;i<12;i++) {
     vec4 e=uEvents[i];
     if(e.z>5.0 || e.w<.005) continue;
-    vec3 center=vec3(e.xy,.22+fract(uEventBands[i]*.173)*.56);
+    vec3 center=vec3(e.xy,.20+fract(uEventBands[i]*.173+dot(e.xy,vec2(.73,1.31)))*.60);
     vec3 d=p-center;
-    float r=length(d),radius=e.z*(.12+uEventBands[i]*.006);
-    float shell=exp(-pow((r-radius)*12.0,2.0));
-    float impulse=e.w*exp(-e.z*1.5)*shell*uIntensity;
-    force+=d/max(r,.025)*impulse*.035;
+    float r=length(d),radius=.045+e.z*(.12+uEventBands[i]*.006);
+    // Warped thick pressure front and tangential wake give a local impulse
+    // lasting ~0.4 s, without drawing a spherical surface in the image.
+    float warpedRadius=radius+.018*sin(dot(d,vec3(19,13,17)));
+    float shell=exp(-pow((r-warpedRadius)*15.0,2.0));
+    float impulse=e.w*exp(-e.z*2.4)*shell*uIntensity*uAcousticGain;
+    vec3 axis=normalize(vec3(.4+sin(uEventBands[i]),1,.7));
+    acousticForce+=(d/max(r,.04)*.24+cross(axis,d)*.20)*impulse;
+  }
+  force=ambientForce+acousticForce;
+  if(uDiagnostic==1) {
+    outVelocity=vec4(ambientForce,0); outMatter=vec4(acousticForce,0);
+    outPigment=vec4(0); return;
   }
   // Velocity is advected, forced, then damped. It continues transporting matter
   // after the audio disappears; no audio variable sets position, scale or light.
@@ -164,11 +223,20 @@ void main() {
   // W retains the initial humidity reservoir, not transported pigment. Smooth
   // condensation/evaporation over 22 s counteracts transport loss without a reset
   // or exposing a static image. Existing density continues moving through it.
+  float transportedDensity=corrected.a;
   corrected.a=mix(corrected.a,originalVelocity.w,1.0-exp(-uDt*.045));
+  // Newly condensed matter carries dye from an independent, seeded reservoir.
+  // A very slow dye feed prevents irreversible numerical homogenization over
+  // minutes. Existing dye is still advected/stretching, never reset or recolored
+  // by audio. The source is cached once rather than recomputing 3D noise/step.
+  float fresh=max(0.0,corrected.a-transportedDensity)/max(.04,corrected.a);
+  float dyeFeed=1.0-(1.0-fresh)*exp(-uDt*.025);
+  dye=mix(dye,volumeSample(uPigmentSource,p),dyeFeed);
   outVelocity=vec4(v.xyz,originalVelocity.w);
   // Fine structures have a finite lifetime: continuously relax material strain
   // instead of resetting UVW maps or letting old coordinates fold into aliases.
   outMatter=vec4(clamp(corrected.rgb*exp(-uDt*.08),-1.0,1.0),clamp(corrected.a,0.0,1.0));
+  outPigment=clamp(dye,0.0,1.0);
 }
 `;
 
@@ -177,6 +245,7 @@ precision highp float;
 in vec2 vUv;
 out vec4 outColor;
 uniform sampler2D uMatter;
+uniform sampler2D uPigment;
 uniform sampler3D uDetail;
 uniform sampler2D uHistory;
 uniform float uHistoryWeight;
@@ -193,7 +262,7 @@ float densityAt(vec3 p,vec4 matter) {
   vec2 broad=textureLod(uDetail,material*4.2,broadLod).rg;
   float fine=textureLod(uDetail,material*13.1,fineLod).g;
   float detail=broad.r*.50+broad.g*.25+fine*.25;
-  float erosion=.28-(detail-.5)*.8;
+  float erosion=.24-(detail-.5)*.8;
   return max(0.0,matter.a-erosion)*2.2;
 }
 void main() {
@@ -232,13 +301,13 @@ void main() {
     float farShadow=densityAt(lightFar,volumeSample(uMatter,lightFar));
     float light=exp(-(closeShadow*.8+farShadow*1.3)*2.2);
     float edge=clamp((density-closeShadow)*3.0+.35,0.0,1.0);
-    vec3 pigment=textureLod(uDetail,(p+matter.rgb)*.65+vec3(.27,.11,.43),2.0).rgb;
-    vec3 albedo=mix(vec3(.025,.17,.27),vec3(.12,.62,.57),smoothstep(.18,.78,pigment.r));
-    albedo=mix(albedo,vec3(.70,.84,.75),smoothstep(.32,.70,pigment.g)*.70);
-    albedo=mix(albedo,vec3(.55,.39,.17),smoothstep(.66,.90,pigment.b)*.45);
-    vec3 scatter=albedo*(.27+light*1.70)+vec3(.15,.29,.27)*edge*light*.35;
+    vec4 pigment=volumeSample(uPigment,p);
+    vec3 albedo=mix(pigment.rgb,vec3(.88,.43,.12),smoothstep(.04,.30,pigment.a));
+    // Colored ambient scattering retains blue/teal identity inside occlusion;
+    // directional attenuation still supplies internal shadows and thickness.
+    vec3 scatter=albedo*(.42+light*1.45)+vec3(.15,.29,.32)*edge*light*.25;
     float depth=clamp((distance-near)/(far-near),0.0,1.0);
-    scatter=mix(scatter,vec3(.045,.16,.21),depth*.3);
+    scatter=mix(scatter,vec3(.045,.12,.21),depth*.16);
     float opacity=1.0-exp(-density*stepLength*1.4);
     color+=transmission*opacity*scatter;
     transmission*=1.0-opacity;

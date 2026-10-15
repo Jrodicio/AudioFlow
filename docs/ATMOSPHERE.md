@@ -1,163 +1,149 @@
-﻿# Atmosphere: gas persistente y render volumétrico
+﻿# Atmosphere: fuerzas acústicas y pigmento volumétrico
 
-Esta iteración sustituye exclusivamente el camino visual de Atmosphere. El shader
-heredado de Liquid/Texture, su simulación, las señales acústicas, la captura,
-React, estilos CSS, controles, preferencias y permisos no fueron modificados.
-La integración se limita al planificador, composición, recursos y diagnóstico de
-`Universe`. Se añade `npm.cmd run test:atmosphere` para validar el volumen.
+El volumen existente se conserva: 96 × 72 × 48 celdas, atlas 8 × 6,
+velocidad persistente, advección a paso fijo 1/60 s, corrección limitada
+MacCormack, detalle 3D y raymarching con absorción y sombras internas.
 
-## Por qué se veía plano
+## Diagnóstico comprobado
 
-El material anterior evaluaba fBm/domain warping sobre un plano 2D y calculaba
-normales de superficie. Tenía movimiento y acentos regionales, pero no guardaba un
-campo gaseoso, no transportaba densidad en profundidad y no integraba luz a través
-de espesores. Cambiar sus parámetros no podía producir oclusión volumétrica real.
+El problema no era un uniform desconectado. En la señal suave reproducible
+(RMS PCM 0,00886), las bandas visuales originales llegaban aproximadamente a
+0,544 / 0,710 / 0,452 en graves, medios y brillo. Sin embargo, la aceleración
+acústica RMS resultante era 0,000487 unidades de volumen/s², frente a 0,00601
+ambientales: apenas 8,1 %. La integración por dt era dimensionalmente correcta.
+El producto vectorial sin normalizar por radio y la máscara espacial reducían
+mucho la magnitud efectiva. En un paso de 1/60 s sólo añadía 0,00000812 de
+velocidad RMS, sobre una velocidad ambiental RMS cercana a 0,0166.
 
-## Arquitectura
+El límite de 0,085 no era el cuello de botella original: el banco previo midió
+máximos cercanos a 0,032. La amortiguación de 0,26/s conserva varios segundos
+de inercia y se mantiene. La saliencia ya era independiente por banda y el
+extractor entregaba características válidas; no se cambió el análisis.
 
-`AtmosphereVolume.ts` mantiene un volumen **96 × 72 × 48** en un atlas de **8 × 6**
-cortes. No son tres imágenes superpuestas: todas las celdas se muestrean con
-interpolación trilineal y las velocidades tienen componentes X, Y y Z.
+Había además una cadena de suavizado: envolventes del extractor, resortes
+visuales de MaterialResponse, otra envolvente sostenida y acumulación de
+imagen con constante de 84 ms. Las perturbaciones débiles y localizadas podían
+quedar ocultas por las capas delanteras, el umbral de densidad y ese historial.
+El banco anterior sólo exigía una diferencia de velocidad de 0,00001.
 
-Tres render targets MRT de dos adjuntos RGBA16F permiten hacer ping-pong y un paso
-intermedio de transporte:
+El color se reconstruía con una textura procedural en coordenadas materiales,
+mezclando varias veces hacia tonos pálidos y atenuándolo en profundidad. No
+existía un campo independiente de pigmento transportado.
 
-- Adjunto 0: velocidad XYZ persistente y reserva de humedad W.
-- Adjunto 1: desplazamiento de coordenadas materiales RGB y densidad A.
-- Primera pasada: advección semi-Lagrangiana con velocidad en el punto medio.
-- Segunda: corrección MacCormack limitada por el entorno de la celda; después,
-  fuerzas ambientales/acústicas, amortiguación y condiciones de borde.
+## Interacción acústica
 
-Paso fijo de **1/60 s**, máximo cuatro recuperaciones por frame. La velocidad está
-limitada a 0,085 unidades normalizadas/s. La amortiguación tiene una constante de
-unos 3,85 s; los bordes imponen componente normal nula en la primera celda.
-Ninguna variación ordinaria del audio reinicia el campo.
+AtmosphereAcoustics consume las características existentes antes del resorte
+visual compartido. Añade sólo 25 ms de ataque; utiliza directamente sostenida
+y saliencia del extractor. Conserva los eventos superpuestos de MaterialResponse.
+Una ganancia entre 0,38 y 1 conserva parte de la dinámica absoluta del RMS,
+sin eliminar la normalización relativa que permite responder al audio tranquilo.
+La demo utiliza una ganancia explícita y sigue identificada como sintética.
+Liquid/Texture conservan sus propias entradas y su shader original.
 
-Una reserva espacial de humedad, generada una sola vez, repone/evapora densidad de
-forma continua con una constante de unos **22 s**. Evita que el transporte numérico
-termine vaciando la escena. No reemplaza la densidad: la materia existente sigue
-siendo transportada y las aportaciones son pequeñas e incrementales.
+Las fuerzas son aceleraciones, no desplazamientos ni cambios de reloj:
 
-El detalle de alta frecuencia reside en una textura 3D periódica de **64³**, creada
-localmente con semilla fija. Se evalúa a través de coordenadas materiales que el
-flujo transporta; no mediante una animación temporal independiente. Se almacena el
-desplazamiento de esas coordenadas para conservar incrementos pequeños en FP16.
-Su deformación se relaja gradualmente (12,5 s) para evitar acumulación de pliegues
-y aliasing. La densidad y la velocidad conservan sus propios historiales.
+- Subgraves/graves: radio 0,38, presión direccional y rotación normalizada por
+  radio, con un campo curl de escala grande. Desplazan masas por varios segundos.
+- Medios: radio 0,25, giro y curl intermedio; modifican dirección y estiran cuerpos.
+- Agudos: radio 0,18, curl de mayor frecuencia espacial, reforzado en densidades
+  de borde. La escala sigue resolviéndose en el grid, sin ruido subvoxel.
+- Transitorios: frente de presión grueso y deformado, con radio inicial finito,
+  propagación radial y estela tangencial. La fuerza cae exponencialmente y deja
+  velocidad persistente. El centro de profundidad depende también del evento.
 
-## Profundidad e iluminación
+Los centros de banda derivan lentamente con fases diferentes; el desplazamiento
+material deforma sus máscaras. No hay selección de una única región ganadora.
+Los doce eventos pueden superponerse en posiciones independientes. El sonido
+no cambia exposición, cámara, escala global, densidad directamente ni velocidad
+del tiempo. El movimiento ambiental continúa sin señal.
 
-Un raymarching en perspectiva atraviesa el volumen de adelante hacia atrás:
+En los escenarios sostenidos medidos a los cinco segundos, la aceleración
+acústica/ambiental RMS pasa a aproximadamente 0,67 para audio suave, 1,08 para
+graves, 0,81 para medios y 0,66 para agudos. Las cifras, unidades, máximos,
+gradientes espaciales y uniforms completos quedan en result.json. Son señales
+sintéticas; no son mediciones de contenido loopback del usuario.
 
-- Extinción/absorción según densidad y longitud de cada paso.
-- Dispersión coloreada dentro de las masas, con paleta acotada.
-- Dos consultas hacia la luz para aproximar sombras internas suaves.
-- Transmitancia acumulada: una masa cercana oculta parcialmente las lejanas.
-- Atenuación de contraste por distancia y cambio de escala aparente por perspectiva.
+## Pigmentos y continuidad
 
-Las posiciones y las velocidades 3D producen movimiento diferencial entre fondo,
-plano medio y primer plano. No se aplica desenfoque por profundidad para fabricarlos.
-El banco GPU permite aislar tercios del trayecto del rayo para inspeccionar esas
-regiones; ese recorte no forma parte de los controles del producto.
+Los tres targets MRT pasan de dos a tres adjuntos RGBA16F:
 
-El muestreo intercalado del rayo, filtrado mip del detalle según huella del paso y
-acumulación temporal eliminan bandas coherentes del raymarching. Dos imágenes
-alternadas guardan el historial de iluminación. Su peso usa tiempo simulado real
-entre renders (unos 84 ms), no un número fijo de frames. Cambiar resolución invalida
-sólo ese historial de imagen, preservando el gas.
+1. Velocidad XYZ y reserva de humedad W, como antes.
+2. Desplazamiento de coordenadas materiales RGB y densidad A, como antes.
+3. Pigmento frío RGB y concentración cálida A, nuevos y persistentes.
 
-## Audio como fuerza
+El pigmento recorre las mismas trayectorias de advección que la materia. Tiene
+su propia corrección MacCormack y límites del entorno para evitar colores fuera
+de rango. La semilla cromática usa ruido independiente de la densidad: azul
+profundo, cobalto, teal/turquesa, cian, bruma clara y cobre/dorado. No usa UV de
+pantalla. La concentración cálida ocupa el canal libre del adjunto nuevo: evita
+que promediar RGB cobre y cian termine neutralizando por completo los acentos.
 
-Se reutilizan sin cambios `FeatureExtractor` y `MaterialResponse`:
+Una reserva cromática estática se genera una sola vez en otro atlas RGBA16F.
+La materia recién condensada incorpora pigmento de esa reserva; un aporte
+continuo con constante de 40 s evita homogeneización numérica irreversible.
+No hay reinicios de color ni cambios ligados al volumen del audio. El pigmento
+existente sigue deformándose y viajando, aunque el modelo incluye reposición y
+no conserva exactamente la masa de cada tinte.
 
-- Graves y subgraves: fuerzas amplias de circulación y presión local.
-- Medios: torque alrededor de distintos ejes y regiones del volumen.
-- Presencia/agudos: fuerzas de curl más pequeñas y rápidas que estiran detalles.
-- Sostenidos/saliencia: mantienen fuerzas regionales graduales e independientes.
-- Eventos: cascarones de presión con centro, banda, edad y decaimiento propios.
-- Estéreo disponible: sesgo espacial de las regiones, sin identificar fuentes.
+Costo adicional de campos frente a la versión anterior: cuatro texturas
+RGBA16F de 331.776 texeles, **10,125 MiB** (tres adjuntos de transporte y una
+reserva). La reserva añade una pasada al inicializar y un muestreo durante
+transporte, sin nuevas pasadas por frame. El transporte del pigmento aumenta
+ancho de banda y el render añade una muestra de atlas por paso del rayo.
 
-El audio no cambia directamente exposición, escala de toda la escena ni velocidad
-del reloj. Al cesar, las fuerzas caen según sus envolventes existentes; el campo de
-velocidades sigue transportando gas y se amortigua. La intensidad cero conserva
-las fuerzas ambientales y la inercia acumulada, retirando el aporte acústico nuevo.
+## Render, rendimiento y ciclo de vida
 
-## Rendimiento y ciclo de vida
+Se mantienen rayos a través del mismo volumen, absorción acumulativa,
+oclusiones, dos muestras de sombra y detalle en coordenadas materiales.
+Se reduce la erosión base de 0,28 a 0,24 para conservar brumas menos densas.
+La iluminación ambiental conserva mejor el pigmento en las sombras y se reduce
+la mezcla que antes lo teñía uniformemente en profundidad.
 
-| Calidad | Pasos máximos | Presupuesto de raymarching |
-| --- | --- | --- |
-| Eco | 32 | 320.000 píxeles |
-| Equilibrada | 48 | 720.000 píxeles |
-| Alta | 64 | 1.100.000 píxeles |
+La acumulación temporal usa ahora 45 ms en silencio y hasta 25 ms con
+excitación. Sólo cambia el peso del historial. El banco mide por separado la
+respuesta con ese filtro y las diferencias entre cuadros.
 
-La composición final conserva la resolución del canvas del motor existente; el
-volumen se integra a resolución acotada y se amplía linealmente. Hay salida temprana
-cuando la transmitancia es mínima. Atmosphere se limita a 60 FPS y puede reducir
-lentamente su resolución de integración ante frames lentos; el grid no cambia.
-No se modifican los límites de FPS de Liquid/Texture.
+Presupuestos de raymarching (la salida final se amplía cuando corresponde):
 
-Los recursos se crean al entrar por primera vez en Atmosphere. Al cambiar a otro
-universo se conserva y finalmente pausa el gas cuando su contribución es menor a
-0,1%, evitando trabajo permanente sobre los otros estilos. Regresar lo continúa.
-Cambiar tamaño o calidad no reinicia densidad/velocidad. Tras pérdida de contexto
-GPU se regeneran los campos, porque su contenido anterior ya no existe.
-Al cerrar se liberan todos los targets, textura 3D, materiales y geometría.
+| Calidad | Píxeles máximos | Pasos |
+|---|---:|---:|
+| Eco | 320.000 | 32 |
+| Equilibrada | 980.000 | 64 |
+| Alta | 1.400.000 | 80 |
 
-La ruta volumétrica requiere WebGL2 y `EXT_color_buffer_float`, disponibles en el
-hardware de referencia con controlador adecuado. Si falta esa extensión se
-mantiene el Atmosphere anterior, sin impedir el uso de los demás universos. F3
-informa la ruta, grid, pasos y resolución de integración. No se agregan controles.
+Se conserva el ajuste adaptativo lento existente. El grid no cambia con la
+resolución. El mayor presupuesto se eligió después de medir margen GPU;
+los tiempos finales figuran en ATMOSPHERE-VALIDATION.md.
 
-No hay lecturas GPU→CPU ni asignaciones de buffers por frame en producción. Las
-lecturas completas de estado se limitan al banco de pruebas. La memoria aproximada
-adicional del volumen equilibrado ronda 23 MB, sin contar el renderer ni el campo
-líquido que ya existía.
+Universe deja de actualizar Liquid sólo cuando el camino volumétrico puro lo
+oculta totalmente (peso Atmosphere >0,995). Conserva ambos buffers y reanuda
+pasos ordinarios en cuanto empieza una transición; no reinicia ni intenta
+simular retrospectivamente el intervalo oculto. La ruta fallback conserva el
+campo líquido activo. La pérdida real de contexto sí regenera las semillas.
 
-## Validación reproducible
+F3 conserva el diagnóstico existente y agrega las bandas que recibe Atmosphere,
+ganancia dinámica, cantidad de eventos recientes y estado de pausa de Liquid.
+Magnitudes de fuerzas, energía cinética, saturación y readbacks de pigmento se
+limitan al banco GPU. No hay lecturas GPU→CPU durante el renderizado normal.
+
+## Reproducción y límites
 
 ```powershell
 npm.cmd test
 npm.cmd run typecheck
 npm.cmd run test:atmosphere
-npm.cmd run test:smoke
 npm.cmd run dist:win
 npm.cmd run test:package
 ```
 
-`test:atmosphere` sirve sólo el banco local en 127.0.0.1:5174 y abre una ventana
-Electron de prueba sin tomar el foco. No reproduce sonido ni solicita captura:
-las señales acústicas de sus escenarios B/C son sintéticas, etiquetadas como tales,
-y pasan por el extractor existente. No se pretende que sean una voz o una película.
+El banco usa paso fijo, semillas idénticas y un control en silencio al mismo
+instante. Guarda capturas con estímulo, control y diferencia absoluta ×4,
+además de comparison.html para inspección local. Desactiva HMR para impedir
+que una edición invalide inadvertidamente el estado reproducible.
 
-Comprueba:
-
-1. Silencio: transporte y deformación visibles entre capturas, con una simulación
-   gemela para comprobar el nivel de redondeo FP16.
-2. Señal suave e impulsos: diferencias regionales de velocidad respecto del control.
-3. Retirada del sonido: inercia residual y amortiguación posterior.
-4. Densidad y movimiento en tres intervalos de profundidad; capturas aisladas.
-5. Cinco minutos adicionales de tiempo simulado a paso fijo, sin NaN/Inf, velocidad
-   o densidad fuera de límites, pérdida de cuerpos visibles o crecimiento de recursos.
-6. Resize/calidad sin reinicio y liberación de todos los recursos al finalizar.
-7. Comparación GPU del shader heredado y el compuesto para Liquid/Texture: diferencia
-   máxima esperada **cero bytes** con las mismas entradas y texturas.
-
-Informes y capturas: `artifacts/atmosphere-volume/`. La prueba general de Electron
-comprueba por separado captura real loopback, interfaz, preferencias y estilos.
-Los FPS del banco corresponden a un backing buffer de 1920×1080 y raymarching
-1131×636 en equilibrada, no a raymarching nativo de dos millones de píxeles.
-
-## Límites
-
-Es una aproximación gaseosa con estado y transporte 3D; no resuelve Navier–Stokes,
-proyección de presión ni conservación exacta de masa. La reserva de humedad es
-un mecanismo artístico de estabilidad, no un modelo meteorológico. La dispersión
-y las sombras son aproximadas, sin trazado múltiple de luz. El grid y el muestreo
-limitan el detalle espacial; la acumulación temporal puede suavizar perturbaciones
-muy rápidas. Las fuerzas del audio no identifican ni separan sus fuentes.
-
-La inspección de capturas verifica geometría, oclusión, evolución y defectos visibles;
-no certifica fotorrealismo ni calidad artística universal. La estabilidad acelerada
-de cinco minutos simulados tampoco equivale a una sesión real de varias horas.
-El rendimiento específico en GTX 1080 Ti requiere medir en ese equipo; no se
-pretende garantizar 144 FPS en esta iteración.
+La simulación no resuelve proyección de presión ni conserva exactamente masa;
+las fuerzas de presión son una aproximación artística. El grid y los pasos de
+rayo limitan los filamentos. Una perturbación detrás de materia opaca puede
+quedar parcialmente ocluida, como corresponde a un volumen. Las métricas de
+imagen rechazan cambios despreciables, pero no certifican una valoración
+artística ni sustituyen observar la relación audiovisual con contenido real.

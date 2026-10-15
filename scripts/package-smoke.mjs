@@ -13,6 +13,7 @@ let nativeLog='';
 for (const output of [child.stdout,child.stderr]) output.on('data',chunk=>{nativeLog=(nativeLog+String(chunk)).slice(-64000);});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 let socket;
+let report;
 const pending=new Map();
 let nextId=0;
 function call(method,params={}) {
@@ -50,7 +51,7 @@ try {
   }
   await delay(1000);
   const {result}=await call('Runtime.evaluate',{expression:`({title:document.title,canvas:!!document.querySelector('canvas'),debugHidden:!document.querySelector('.acoustic-debug'),error:document.querySelector('[role="alert"]')?.textContent||'',fps:document.querySelector('.scene-meta')?.textContent,status:document.querySelector('.source-badge')?.textContent,bridge:!!window.audioflow})`,returnByValue:true});
-  const report=result.value;
+  report=result.value;
   if(!report.canvas||report.error||!report.bridge)throw new Error(`Packaged rendering failed: ${JSON.stringify(report)}`);
   if(!report.debugHidden)throw new Error('Packaged diagnostics should start hidden');
   // F3 must work even with a slider focused.
@@ -73,17 +74,32 @@ try {
   await delay(800);
   const atmosphere=await call('Runtime.evaluate',{expression:`({error:document.querySelector('[role="alert"]')?.textContent||'',debug:document.querySelector('.acoustic-debug')?.textContent||'',fps:document.querySelector('.scene-meta')?.textContent})`,returnByValue:true});
   report.atmosphere=atmosphere.result.value;
+  // Cold shader compilation can consume wall time outside the clamped visual
+  // clock. Wait for the actual fade/diagnostic state, with a bounded deadline.
+  for(let i=0;i<20&&!report.atmosphere.debug.includes('Liquid pausado');i++) {
+    await delay(500);
+    const settled=await call('Runtime.evaluate',{expression:`({error:document.querySelector('[role="alert"]')?.textContent||'',debug:document.querySelector('.acoustic-debug')?.textContent||'',fps:document.querySelector('.scene-meta')?.textContent})`,returnByValue:true});
+    report.atmosphere=settled.result.value;
+  }
   if(report.atmosphere.error||!report.atmosphere.debug.includes('gas 96×72×48')||report.atmosphere.debug.includes('0×0'))throw new Error('Packaged Atmosphere failed');
+  if(!report.atmosphere.debug.includes('Liquid pausado'))throw new Error('Hidden Liquid simulation did not pause');
   await call('Input.dispatchKeyEvent',{type:'keyDown',key:'F3',code:'F3',windowsVirtualKeyCode:114});
   await call('Input.dispatchKeyEvent',{type:'keyUp',key:'F3',code:'F3',windowsVirtualKeyCode:114});
   const atmosphereScreenshot=await call('Page.captureScreenshot',{format:'png'});
   await writeFile('artifacts/packaged-atmosphere.png',Buffer.from(atmosphereScreenshot.data,'base64'));
+  await call('Runtime.evaluate',{expression:`document.querySelectorAll('.style-selector button')[1].click()`});
+  await call('Input.dispatchKeyEvent',{type:'keyDown',key:'F3',code:'F3',windowsVirtualKeyCode:114});
+  await call('Input.dispatchKeyEvent',{type:'keyUp',key:'F3',code:'F3',windowsVirtualKeyCode:114});
+  await delay(1000);
+  const resumed=await call('Runtime.evaluate',{expression:`document.querySelector('.acoustic-debug')?.textContent||''`,returnByValue:true});
+  report.liquidResumed=resumed.result.value.includes('Liquid activo');
+  if(!report.liquidResumed)throw new Error('Liquid did not resume during transition');
   await writeFile('artifacts/package-result.json',JSON.stringify(report,null,2));
   console.log(JSON.stringify(report,null,2));
   await call('Browser.close').catch(()=>{});
 } catch(error) {
   await mkdir('artifacts',{recursive:true});
-  await writeFile('artifacts/package-failure.json',JSON.stringify({error:String(error),nativeLog},null,2));
+  await writeFile('artifacts/package-failure.json',JSON.stringify({error:String(error),nativeLog,report},null,2));
   throw error;
 } finally {
   socket?.close();

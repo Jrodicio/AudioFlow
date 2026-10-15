@@ -1,6 +1,6 @@
 ﻿import * as THREE from 'three';
 import type { Quality } from '../settings';
-import { transportShader, volumeRenderShader, volumeVertex } from './atmosphereShaders';
+import { transportShader, volumeRenderShader, volumeVertex, pigmentSourceShader } from './atmosphereShaders';
 import { makeVolumeDetailData } from './volumeDetail';
 
 export const GAS_GRID = { x: 96, y: 72, z: 48, columns: 8, rows: 6 } as const;
@@ -8,8 +8,8 @@ export const GAS_STEP = 1/60;
 export const GAS_MAX_SPEED = .085;
 export const atmosphereQuality = {
   eco: { pixels: 320_000, steps: 32 },
-  balanced: { pixels: 720_000, steps: 48 },
-  high: { pixels: 1_100_000, steps: 64 },
+  balanced: { pixels: 980_000, steps: 64 },
+  high: { pixels: 1_400_000, steps: 80 },
 } as const;
 
 export function volumeImageSize(width: number, height: number, quality: Quality, adaptive = 1) {
@@ -39,7 +39,7 @@ if(uVolumeEnabled>.5 && uStyle.x>.001) {
 type Uniforms = Record<string,THREE.IUniform>;
 
 /** A 3D gas, not a stack of animated images. MRT atlas fields retain XYZ
- * velocity, humidity reservoir, density and material coordinates. Fixed-step
+ * velocity, humidity reservoir, density, material coordinates and RGB dye. Fixed-step
  * limited MacCormack transport is followed by ambient/acoustic body forces.
  * All readbacks are confined to the separate GPU validation harness. */
 export class AtmosphereVolume {
@@ -54,6 +54,8 @@ export class AtmosphereVolume {
   private transport: THREE.ShaderMaterial | null = null;
   private shading: THREE.ShaderMaterial | null = null;
   private detail: THREE.Data3DTexture | null = null;
+  private pigmentSource: THREE.WebGLRenderTarget | null = null;
+  private seedPigment: THREE.ShaderMaterial | null = null;
   private transportScene = new THREE.Scene();
   private imageScene = new THREE.Scene();
   private camera = new THREE.Camera();
@@ -115,9 +117,15 @@ export class AtmosphereVolume {
     const grid={value:new THREE.Vector3(GAS_GRID.x,GAS_GRID.y,GAS_GRID.z)};
     const tiles={value:new THREE.Vector2(GAS_GRID.columns,GAS_GRID.rows)};
     this.states=[0,1,2].map(()=>new THREE.WebGLRenderTarget(GAS_GRID.x*GAS_GRID.columns,GAS_GRID.y*GAS_GRID.rows,{
-      count:2,type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
+      count:3,type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
       depthBuffer:false,stencilBuffer:false,generateMipmaps:false,
     }));
+    this.pigmentSource=new THREE.WebGLRenderTarget(GAS_GRID.x*GAS_GRID.columns,GAS_GRID.y*GAS_GRID.rows,{
+      type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
+      depthBuffer:false,stencilBuffer:false,generateMipmaps:false,
+    });
+    this.seedPigment=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:pigmentSourceShader,
+      glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{uGrid:grid,uTiles:tiles}});
     const size=volumeImageSize(this.width,this.height,this.quality,this.adaptive);
     this.image=new THREE.WebGLRenderTarget(size.width,size.height,{
       type:THREE.UnsignedByteType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
@@ -134,7 +142,10 @@ export class AtmosphereVolume {
     this.transport=new THREE.ShaderMaterial({ vertexShader:volumeVertex,fragmentShader:transportShader,
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{
         uGrid:grid,uTiles:tiles,uPass:{value:0},uDt:{value:GAS_STEP},uSimulationTime:{value:0},uIntensity:{value:0},
+        uAcousticGain:this.acoustic.uAcousticGain ?? {value:1},uDiagnostic:{value:0},
         uVelocity:{value:this.states[1].textures[0]},uMatter:{value:this.states[1].textures[1]},
+        uPigment:{value:this.states[1].textures[2]},uTransportPigment:{value:this.states[2].textures[2]},
+        uPigmentSource:{value:this.pigmentSource.texture},
         uTransportVelocity:{value:this.states[2].textures[0]},uTransportMatter:{value:this.states[2].textures[1]},
         uBands:this.acoustic.uBands,uSustained:this.acoustic.uSustained,uSalience:this.acoustic.uSalience,
         uEvents:this.acoustic.uEvents,uEventBands:this.acoustic.uEventBands,uContext:this.acoustic.uContext,
@@ -142,6 +153,7 @@ export class AtmosphereVolume {
     this.shading=new THREE.ShaderMaterial({vertexShader:volumeVertex,fragmentShader:volumeRenderShader,
       glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:{
         uGrid:grid,uTiles:tiles,uMatter:{value:this.states[0].textures[1]},
+        uPigment:{value:this.states[0].textures[2]},
         uDetail:{value:this.detail},
         uDepthWindow:{value:new THREE.Vector2(0,1)},
         uHistory:{value:this.historyImage.texture},uHistoryWeight:{value:0},uFrame:{value:0},
@@ -159,8 +171,13 @@ export class AtmosphereVolume {
     const previousTarget=renderer.getRenderTarget();
     try {
       if(!this.initialized) {
+        const mesh=this.transportScene.children[0] as THREE.Mesh;
+        mesh.material=this.seedPigment!;
+        renderer.setRenderTarget(this.pigmentSource); renderer.render(this.transportScene,this.camera);
+        mesh.material=this.transport!;
         uniforms.uPass.value=0;
         uniforms.uVelocity.value=this.states[1].textures[0]; uniforms.uMatter.value=this.states[1].textures[1];
+        uniforms.uPigment.value=this.states[1].textures[2]; uniforms.uTransportPigment.value=this.states[2].textures[2];
         uniforms.uTransportVelocity.value=this.states[2].textures[0]; uniforms.uTransportMatter.value=this.states[2].textures[1];
         renderer.setRenderTarget(this.states[0]); renderer.render(this.transportScene,this.camera);
         this.index=0; this.initialized=true;
@@ -170,10 +187,12 @@ export class AtmosphereVolume {
       while(this.accumulator+1e-8>=GAS_STEP) {
         const previous=this.states[this.index],next=this.states[1-this.index],scratch=this.states[2];
         uniforms.uVelocity.value=previous.textures[0]; uniforms.uMatter.value=previous.textures[1];
+        uniforms.uPigment.value=previous.textures[2]; uniforms.uTransportPigment.value=previous.textures[2];
         uniforms.uTransportVelocity.value=previous.textures[0]; uniforms.uTransportMatter.value=previous.textures[1];
         uniforms.uPass.value=1;
         renderer.setRenderTarget(scratch); renderer.render(this.transportScene,this.camera);
         uniforms.uTransportVelocity.value=scratch.textures[0]; uniforms.uTransportMatter.value=scratch.textures[1];
+        uniforms.uTransportPigment.value=scratch.textures[2];
         uniforms.uPass.value=2; uniforms.uSimulationTime.value=this.simulationTime;
         renderer.setRenderTarget(next); renderer.render(this.transportScene,this.camera);
         this.index=1-this.index; this.accumulator=Math.max(0,this.accumulator-GAS_STEP);
@@ -188,9 +207,16 @@ export class AtmosphereVolume {
     try {
       const previous=this.image; this.image=this.historyImage; this.historyImage=previous;
       this.shading.uniforms.uMatter.value=this.states[this.index].textures[1];
+      this.shading.uniforms.uPigment.value=this.states[this.index].textures[2];
       this.shading.uniforms.uHistory.value=this.historyImage.texture;
       const frameAge=Math.max(1/120,this.simulationTime-this.lastDrawTime);
-      this.shading.uniforms.uHistoryWeight.value=this.historyReady && useHistory ? Math.exp(-frameAge/.084) : 0;
+      // Reduce latency during excitation without modulating density or light.
+      // Even in silence 45 ms suffices to integrate the interleaved ray samples.
+      let excitation=0;
+      for(let i=0;i<7;i++)excitation=Math.max(excitation,this.acoustic.uSalience.value[i],this.acoustic.uBands.value[i]);
+      excitation=Math.min(1,excitation);
+      const historySeconds=.045-.020*excitation;
+      this.shading.uniforms.uHistoryWeight.value=this.historyReady && useHistory ? Math.exp(-frameAge/historySeconds) : 0;
       this.shading.uniforms.uFrame.value=this.renderFrame++;
       this.renderer.setRenderTarget(this.image); this.renderer.render(this.imageScene,this.camera);
       this.historyReady=true;
@@ -199,7 +225,10 @@ export class AtmosphereVolume {
   }
 
   /** Used only after actual context loss, never for audio or ordinary resize. */
-  restore() { this.initialized=false; this.accumulator=0; this.historyReady=false; }
+  restore() {
+    this.initialized=false; this.accumulator=0; this.historyReady=false;
+    this.simulationTime=0; this.lastDrawTime=0; this.renderFrame=0;
+  }
 
   dispose() {
     if(this.disposed) return; this.disposed=true;
@@ -208,6 +237,7 @@ export class AtmosphereVolume {
     this.historyImage?.dispose(); this.historyImage=null;
     this.geometry?.dispose(); this.transport?.dispose(); this.shading?.dispose();
     this.detail?.dispose(); this.detail=null;
+    this.pigmentSource?.dispose();this.pigmentSource=null;this.seedPigment?.dispose();this.seedPigment=null;
     this.transportScene.clear(); this.imageScene.clear();
   }
 }

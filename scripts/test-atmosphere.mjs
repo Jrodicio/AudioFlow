@@ -1,7 +1,9 @@
 ﻿import { createServer } from 'vite';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-const server=await createServer({server:{host:'127.0.0.1',port:5174,strictPort:true}});
+// A validation run must keep its loaded modules even if documentation or other
+// files are edited concurrently; HMR would silently invalidate seeded replay.
+const server=await createServer({server:{host:'127.0.0.1',port:5174,strictPort:true,hmr:false,watch:null}});
 await server.listen();
 const require=createRequire(import.meta.url),env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
 const child=spawn(require('electron'),['scripts/atmosphere-gpu.cjs'],{env,windowsHide:true,stdio:'inherit'});
